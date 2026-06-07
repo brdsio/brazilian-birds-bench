@@ -1,10 +1,24 @@
-# Python-generated files
+# Python
 __pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
 
-# Virtual environments
-.venv
+# uv
+.uv/
+
+# dados (gerados / baixados)
+data_raw/*
+!data_raw/.gitkeep
+src/data/*
+!src/data/.gitkeep
+
+# secrets
+.env
+
+# testes / lint
+.pytest_cache/
+.ruff_cache/
+
+CLAUDE.local.md
