@@ -11,8 +11,6 @@ venv/
 # dados (gerados / baixados)
 data_raw/*
 !data_raw/.gitkeep
-src/data/*
-!src/data/.gitkeep
 
 # secrets
 .env
