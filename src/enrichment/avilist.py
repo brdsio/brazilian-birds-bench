@@ -16,9 +16,9 @@ no network.
     Short version  (~5 MB): essential taxonomic + name fields. Enough here.
     Extended       (~9 MB): adds nomenclature, bibliography, external links.
 
-The Short spreadsheet has a stable direct URL, so ``bbb enrich-avilist
---download`` fetches it automatically; alternatively the user grabs it from the
-checklist page and passes the path with --avilist-file.
+The Short spreadsheet has a stable direct URL, so ``bbb`` downloads it
+automatically; alternatively the user grabs it from the checklist page and
+passes the path with --avilist-file (with --no-download).
 
 IMPORTANT -- column names are resolved flexibly. The exact AviList header
 labels were not verified against a live file in this environment; the resolver
@@ -30,6 +30,7 @@ one-line fix rather than a silent wrong-column bug.
 from __future__ import annotations
 
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import openpyxl
@@ -53,6 +54,15 @@ _COLUMN_CANDIDATES: dict[str, list[str]] = {
 }
 
 SPECIES_RANK = "species"  # value of Taxon_rank for species-level rows
+
+# Columns this module appends to each CBRO record, in output order. Single
+# source of truth so the CLI commands never hardcode the list.
+AVILIST_FIELDS = [
+    "english_name_avilist",
+    "avilist_matched",
+    "avilist_match_method",  # "binomial" | "epithet_family" | "unmatched"
+    "name_disputed_avilist",
+]
 
 
 def _resolve_columns(header: list[str]) -> dict[str, int]:
@@ -135,24 +145,81 @@ def load_avilist_index(xlsx_path: Path) -> dict[str, dict]:
     return index
 
 
+def _epithet_family_index(
+    avilist_index: dict[str, dict],
+) -> dict[tuple[str, str], list[tuple[str, dict]]]:
+    """Secondary index for the fallback pass: ``(epithet, family) -> records``.
+
+    Lets us recover species that CBRO files under a different genus than AviList
+    (a genus lump/split, e.g. CBRO ``Aburria jacutinga`` vs AviList ``Pipile
+    jacutinga``) but where the epithet and family still agree.
+    """
+    by_ef: dict[tuple[str, str], list[tuple[str, dict]]] = defaultdict(list)
+    for sci_key, rec in avilist_index.items():
+        parts = sci_key.split()
+        if len(parts) < 2:
+            continue
+        family = str(rec.get("family") or "").strip().lower()
+        if not family:
+            continue
+        by_ef[(parts[1], family)].append((sci_key, rec))
+    return by_ef
+
+
+def _fallback_lookup(
+    row: dict[str, object],
+    ef_index: dict[tuple[str, str], list[tuple[str, dict]]],
+) -> dict | None:
+    """Resolve a CBRO row by (epithet, family) in a *different* genus.
+
+    Returns the AviList record only when the match is unambiguous (exactly one
+    distinct target taxon); otherwise None, leaving the row unmatched for manual
+    review rather than guessing among homonymous epithets.
+    """
+    epithet = str(row.get("species_epithet", "")).strip().lower()
+    family = str(row.get("family", "")).strip().lower()
+    cbro_genus = str(row.get("genus", "")).strip().lower()
+    if not (epithet and family):
+        return None
+    candidates = [
+        (sci_key, rec)
+        for sci_key, rec in ef_index.get((epithet, family), [])
+        if sci_key.split()[0] != cbro_genus
+    ]
+    distinct = {sci_key for sci_key, _ in candidates}
+    if len(distinct) == 1:
+        return candidates[0][1]
+    return None
+
+
 def enrich_rows(
     cbro_rows: list[dict[str, object]],
     avilist_index: dict[str, dict],
 ) -> tuple[list[dict[str, object]], int]:
     """Add AviList columns to each CBRO record. Returns (rows, n_matched).
 
+    Two-pass merge: an exact match on normalized scientific name first, then a
+    conservative fallback on ``(epithet, family)`` in a different genus to
+    recover genus lumps/splits. ``avilist_match_method`` records which pass won.
+
     Columns added:
         english_name_avilist   AviList English name (empty if no match)
-        avilist_matched         True/False -- matched by scientific name
+        avilist_matched         True/False -- matched by either pass
+        avilist_match_method    "binomial" | "epithet_family" | "unmatched"
         name_disputed_avilist   True when matched but the English name differs
                                 from the CBRO name
     """
+    ef_index = _epithet_family_index(avilist_index)
     enriched: list[dict[str, object]] = []
     matched = 0
 
     for row in cbro_rows:
         sci_key = _normalize_sci(str(row["scientific_name"]))
         av = avilist_index.get(sci_key)
+        method = "binomial"
+        if av is None:
+            av = _fallback_lookup(row, ef_index)
+            method = "epithet_family"
 
         if av is not None:
             matched += 1
@@ -163,6 +230,7 @@ def enrich_rows(
                 **row,
                 "english_name_avilist": en_av,
                 "avilist_matched": True,
+                "avilist_match_method": method,
                 "name_disputed_avilist": disputed,
             }
         else:
@@ -170,6 +238,7 @@ def enrich_rows(
                 **row,
                 "english_name_avilist": "",
                 "avilist_matched": False,
+                "avilist_match_method": "unmatched",
                 "name_disputed_avilist": False,
             }
         enriched.append(row)

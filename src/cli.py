@@ -1,13 +1,13 @@
 """``bbb`` CLI -- data pipeline for the brazilian-birds-bench benchmark.
 
-Subcommands:
-    bbb parse           Read the CBRO spreadsheet and produce the species CSV.
-    bbb enrich          Add English names from eBird (API) to the species CSV.
-    bbb enrich-avilist  Add English names from AviList (local xlsx) to the CSV.
+A single command runs the whole pipeline end-to-end:
 
-The group is intentionally thin: all logic lives in
-:mod:`src.parsing` and :mod:`src.enrichment`.
-Here we only wire arguments to calls.
+    bbb   Download CBRO + AviList, fetch the eBird taxonomy, merge all three
+          authorities by scientific name, and write one final CSV carrying both
+          name_disputed columns.
+
+The command is intentionally thin: all logic lives in :mod:`src.parsing` and
+:mod:`src.enrichment`. Here we only wire arguments to calls.
 """
 
 from __future__ import annotations
@@ -19,12 +19,13 @@ import click
 
 from .parsing.cbro import OUTPUT_FIELDS, parse_cbro
 from .enrichment.ebird import (
+    EBIRD_FIELDS,
     enrich_rows as enrich_rows_ebird,
     fetch_ebird_taxonomy,
     get_token,
-    read_cbro_csv,
 )
 from .enrichment.avilist import (
+    AVILIST_FIELDS,
     enrich_rows as enrich_rows_avilist,
     load_avilist_index,
 )
@@ -40,8 +41,9 @@ AVILIST_URL = (
     "AviList-v2025-11Jun-short.xlsx"
 )
 
-DEFAULT_SPECIES_CSV = "src/data/cbro_species.csv"
+DEFAULT_CBRO_FILE = "data_raw/cbro_2021.xlsx"
 DEFAULT_AVILIST_FILE = "data_raw/avilist_v2025_short.xlsx"
+DEFAULT_OUTPUT = "src/data/benchmark_dataset.csv"
 
 
 def _write_csv(rows: list[dict], fieldnames: list[str], out_path: Path) -> None:
@@ -50,164 +52,6 @@ def _write_csv(rows: list[dict], fieldnames: list[str], out_path: Path) -> None:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
-
-
-@click.group()
-@click.version_option()
-def cli() -> None:
-    """brazilian-birds-bench -- data pipeline for the bird-name benchmark."""
-
-
-@cli.command()
-@click.option(
-    "--input", "input_path", type=click.Path(path_type=Path),
-    default="data_raw/cbro_2021.xlsx", show_default=True,
-    help="Path to the CBRO .xlsx file.",
-)
-@click.option(
-    "--output", "output_path", type=click.Path(path_type=Path),
-    default=DEFAULT_SPECIES_CSV, show_default=True,
-    help="Output CSV with the species.",
-)
-@click.option(
-    "--download", is_flag=True,
-    help="Download the spreadsheet from Zenodo to --input before parsing.",
-)
-def parse(input_path: Path, output_path: Path, download: bool) -> None:
-    """Read the CBRO spreadsheet and produce the species CSV (decomposed status)."""
-    if download:
-        _download(ZENODO_URL, input_path)
-
-    if not input_path.exists():
-        raise click.ClickException(
-            f"File not found: {input_path}. Use --download or set --input."
-        )
-
-    records = parse_cbro(input_path)
-    _write_csv(records, OUTPUT_FIELDS, output_path)
-
-    endemic = sum(1 for r in records if r["endemic_brazil"])
-    genera = len({r["genus"] for r in records})
-    families = len({r["family"] for r in records})
-    click.echo(
-        f"OK: {len(records)} species -> {output_path}\n"
-        f"    {endemic} endemic | {genera} genera | {families} families",
-        err=True,
-    )
-
-
-@cli.command()
-@click.option(
-    "--input", "input_path", type=click.Path(path_type=Path),
-    default=DEFAULT_SPECIES_CSV, show_default=True,
-    help="Species CSV produced by 'bbb parse'.",
-)
-@click.option(
-    "--output", "output_path", type=click.Path(path_type=Path),
-    default="src/data/cbro_species_ebird.csv",
-    show_default=True, help="Output CSV enriched with eBird.",
-)
-@click.option(
-    "--token", default=None,
-    help="eBird API token. Defaults to the EBIRD_API_TOKEN environment variable.",
-)
-@click.option(
-    "--locale", default="en", show_default=True,
-    help="Locale for the eBird common name (en = English).",
-)
-def enrich(input_path: Path, output_path: Path,
-           token: str | None, locale: str) -> None:
-    """Add English names from eBird to the species CSV, by scientific name."""
-    if not input_path.exists():
-        raise click.ClickException(
-            f"Input CSV not found: {input_path}. Run 'bbb parse' first."
-        )
-
-    resolved_token = get_token(token)
-    cbro_rows = read_cbro_csv(input_path)
-    ebird_index = fetch_ebird_taxonomy(resolved_token, locale=locale)
-    enriched, matched = enrich_rows_ebird(cbro_rows, ebird_index)
-
-    new_fields = OUTPUT_FIELDS + [
-        "english_name_ebird", "ebird_species_code",
-        "ebird_matched", "name_disputed",
-    ]
-    _write_csv(enriched, new_fields, output_path)
-
-    total = len(enriched)
-    disputed = sum(1 for r in enriched if r["name_disputed"])
-    unmatched = total - matched
-    click.echo(
-        f"OK: {total} species -> {output_path}\n"
-        f"    {matched} eBird-matched | {unmatched} unmatched | "
-        f"{disputed} with divergent English name (name_disputed)",
-        err=True,
-    )
-
-
-@cli.command(name="enrich-avilist")
-@click.option(
-    "--input", "input_path", type=click.Path(path_type=Path),
-    default=DEFAULT_SPECIES_CSV, show_default=True,
-    help="Species CSV produced by 'bbb parse' (or a previously enriched CSV).",
-)
-@click.option(
-    "--avilist-file", "avilist_path", type=click.Path(path_type=Path),
-    default=DEFAULT_AVILIST_FILE, show_default=True,
-    help="Path to the AviList .xlsx (Short or Extended), from avilist.org.",
-)
-@click.option(
-    "--output", "output_path", type=click.Path(path_type=Path),
-    default="src/data/cbro_species_avilist.csv",
-    show_default=True, help="Output CSV enriched with AviList.",
-)
-@click.option(
-    "--download", is_flag=True,
-    help="Download the AviList Short spreadsheet to --avilist-file first.",
-)
-def enrich_avilist(input_path: Path, avilist_path: Path,
-                   output_path: Path, download: bool) -> None:
-    """Add English names from AviList (local xlsx) to the species CSV.
-
-    AviList is the unified IOC/Clements/BirdLife checklist. Use --download to
-    fetch the Short spreadsheet automatically, or pass an existing copy with
-    --avilist-file. This command runs offline once the file is present; chaining
-    it on top of the eBird output lets you triangulate three authorities (CBRO,
-    eBird, AviList).
-    """
-    if not input_path.exists():
-        raise click.ClickException(
-            f"Input CSV not found: {input_path}. Run 'bbb parse' first."
-        )
-    if download:
-        _download(AVILIST_URL, avilist_path)
-    if not avilist_path.exists():
-        raise click.ClickException(
-            f"AviList file not found: {avilist_path}. Use --download, or grab "
-            f"it from https://www.avilist.org/checklist/v2025/"
-        )
-
-    cbro_rows = read_cbro_csv(input_path)
-    avilist_index = load_avilist_index(avilist_path)
-    enriched, matched = enrich_rows_avilist(cbro_rows, avilist_index)
-
-    # Preserve any columns already present (e.g. eBird) and append AviList ones.
-    base_fields = list(cbro_rows[0].keys()) if cbro_rows else OUTPUT_FIELDS
-    avilist_fields = [
-        "english_name_avilist", "avilist_matched", "name_disputed_avilist",
-    ]
-    new_fields = base_fields + [f for f in avilist_fields if f not in base_fields]
-    _write_csv(enriched, new_fields, output_path)
-
-    total = len(enriched)
-    disputed = sum(1 for r in enriched if r["name_disputed_avilist"])
-    unmatched = total - matched
-    click.echo(
-        f"OK: {total} species -> {output_path}\n"
-        f"    {matched} AviList-matched | {unmatched} unmatched | "
-        f"{disputed} with divergent English name (name_disputed_avilist)",
-        err=True,
-    )
 
 
 def _download(url: str, dest: Path) -> None:
@@ -220,6 +64,90 @@ def _download(url: str, dest: Path) -> None:
             for chunk in resp.iter_content(chunk_size=1 << 16):
                 fh.write(chunk)
     click.echo(f"Saved to {dest}", err=True)
+
+
+@click.command()
+@click.option(
+    "--cbro-file", "cbro_path", type=click.Path(path_type=Path),
+    default=DEFAULT_CBRO_FILE, show_default=True,
+    help="Local CBRO .xlsx (downloaded if missing, unless --no-download).",
+)
+@click.option(
+    "--avilist-file", "avilist_path", type=click.Path(path_type=Path),
+    default=DEFAULT_AVILIST_FILE, show_default=True,
+    help="Local AviList .xlsx (downloaded if missing, unless --no-download).",
+)
+@click.option(
+    "--output", "output_path", type=click.Path(path_type=Path),
+    default=DEFAULT_OUTPUT, show_default=True,
+    help="Final CSV with all three authorities and both name_disputed columns.",
+)
+@click.option(
+    "--token", default=None,
+    help="eBird API token. Defaults to the EBIRD_API_TOKEN environment variable.",
+)
+@click.option(
+    "--locale", default="en", show_default=True,
+    help="Locale for the eBird common name (en = English).",
+)
+@click.option(
+    "--download/--no-download", default=True, show_default=True,
+    help="Download CBRO/AviList sources when the local file is missing.",
+)
+@click.version_option()
+def cli(cbro_path: Path, avilist_path: Path, output_path: Path,
+        token: str | None, locale: str, download: bool) -> None:
+    """Build the brazilian-birds-bench dataset in one shot.
+
+    Downloads any missing source (CBRO from Zenodo, AviList from avilist.org),
+    fetches the eBird taxonomy, and merges all three authorities by scientific
+    name into one CSV carrying both ``name_disputed`` (eBird vs CBRO) and
+    ``name_disputed_avilist`` (AviList vs CBRO). Local source files, if present,
+    are reused as a cache; pass ``--no-download`` to require them instead.
+    Needs an eBird token: set EBIRD_API_TOKEN in a .env file or pass --token.
+    """
+    # 1. CBRO -> base records (offline once the .xlsx is local).
+    if download and not cbro_path.exists():
+        _download(ZENODO_URL, cbro_path)
+    if not cbro_path.exists():
+        raise click.ClickException(
+            f"CBRO file not found: {cbro_path}. Drop --no-download or set --cbro-file."
+        )
+    records = parse_cbro(cbro_path)
+
+    # 2. eBird -> english_name_ebird + name_disputed (online; needs a token).
+    resolved_token = get_token(token)
+    ebird_index = fetch_ebird_taxonomy(resolved_token, locale=locale)
+    records, ebird_matched = enrich_rows_ebird(records, ebird_index)
+
+    # 3. AviList -> english_name_avilist + name_disputed_avilist (offline once local).
+    if download and not avilist_path.exists():
+        _download(AVILIST_URL, avilist_path)
+    if not avilist_path.exists():
+        raise click.ClickException(
+            f"AviList file not found: {avilist_path}. Drop --no-download or set "
+            f"--avilist-file."
+        )
+    avilist_index = load_avilist_index(avilist_path)
+    records, avilist_matched = enrich_rows_avilist(records, avilist_index)
+
+    # 4. One final CSV with every column.
+    fields = OUTPUT_FIELDS + EBIRD_FIELDS + AVILIST_FIELDS
+    _write_csv(records, fields, output_path)
+
+    total = len(records)
+    eb_fallback = sum(1 for r in records if r["ebird_match_method"] == "epithet_family")
+    av_fallback = sum(1 for r in records if r["avilist_match_method"] == "epithet_family")
+    eb_disputed = sum(1 for r in records if r["name_disputed"])
+    av_disputed = sum(1 for r in records if r["name_disputed_avilist"])
+    click.echo(
+        f"OK: {total} species -> {output_path}\n"
+        f"    eBird:   {ebird_matched} matched ({eb_fallback} via epithet+family) | "
+        f"{total - ebird_matched} unmatched | {eb_disputed} name_disputed\n"
+        f"    AviList: {avilist_matched} matched ({av_fallback} via epithet+family) | "
+        f"{total - avilist_matched} unmatched | {av_disputed} name_disputed_avilist",
+        err=True,
+    )
 
 
 if __name__ == "__main__":

@@ -28,27 +28,12 @@ uv sync
 uv pip install -e .
 ```
 
-## Pipeline
+## Usage
 
-The CLI is exposed as `bbb`.
+The CLI is exposed as a single command, `bbb`, that builds the whole dataset in
+one shot.
 
-### 1. Parse the CBRO checklist
-
-```bash
-# download the spreadsheet from Zenodo and parse it
-bbb parse --download
-
-# or parse a local copy
-bbb parse --input data_raw/cbro_2021.xlsx
-```
-
-Produces `brazilian_birds_bench/data/cbro_species.csv`: one row per species,
-with scientific name, taxonomy (order / family / genus), Portuguese and English
-names, and the CBRO status field decomposed into structured columns
-(`occurrence`, `endemic_brazil`, `extinct`, `introduced`, `status_uncertain`,
-`origin_directions`).
-
-### 2. Enrich with eBird English names
+### 1. Configure the eBird token
 
 Get an eBird API token at https://ebird.org/api/keygen, then copy the example
 env file and fill it in:
@@ -58,37 +43,48 @@ cp .env.example .env
 # edit .env and set EBIRD_API_TOKEN=your_token_here
 ```
 
-The token is loaded automatically from `.env` (no manual `export` needed):
+The token is loaded automatically from `.env` (no manual `export` needed). You
+can also pass it ad hoc with `bbb --token your_token_here`.
+
+### 2. Build the dataset
 
 ```bash
-bbb enrich
+bbb
 ```
 
-You can still override it ad hoc with `bbb enrich --token your_token_here`.
+`bbb` runs every stage end-to-end and writes a single
+`src/data/benchmark_dataset.csv` with all three authorities and both divergence
+columns (`name_disputed` for eBird, `name_disputed_avilist` for AviList).
+Specifically it:
 
-Downloads the full eBird taxonomy in a single request and merges by scientific
-name, adding `english_name_ebird`, `ebird_species_code`, `ebird_matched`, and
-`name_disputed` (true when eBird and CBRO disagree on the English name).
+1. **Parses the CBRO checklist** → scientific name, taxonomy (order / family /
+   genus), Portuguese and English names, and the CBRO status field decomposed
+   into structured columns (`occurrence`, `endemic_brazil`, `extinct`,
+   `introduced`, `status_uncertain`, `origin_directions`).
+2. **Merges eBird/Clements** by scientific name → `english_name_ebird`,
+   `ebird_species_code`, `ebird_matched`, `ebird_match_method`, `name_disputed`.
+3. **Merges AviList** by scientific name → `english_name_avilist`,
+   `avilist_matched`, `avilist_match_method`, `name_disputed_avilist`.
 
-### 3. Enrich with AviList English names (third authority)
+Matching runs in two passes: an exact match on the scientific binomial, then a
+conservative fallback on `(epithet, family)` in a different genus that recovers
+genus lumps/splits (e.g. CBRO *Aburria jacutinga* ↔ *Pipile jacutinga*). The
+`*_match_method` columns record which pass matched each row (`binomial`,
+`epithet_family`, or `unmatched`).
 
-Download the AviList Short spreadsheet automatically and enrich in one step:
+It **downloads whatever it needs** — the CBRO spreadsheet from Zenodo and the
+AviList spreadsheet from avilist.org — so you never have to place a source file
+by hand. Local copies, if present in `data_raw/`, are reused as a cache. Pass
+`--no-download` to require local copies and fail if they are missing.
+
+Useful options (`bbb --help` for the full list):
 
 ```bash
-# fetch the Short spreadsheet to data_raw/avilist_v2025_short.xlsx, then enrich
-bbb enrich-avilist --download
-
-# or point at a copy you already have (e.g. the Extended version)
-bbb enrich-avilist --avilist-file data_raw/avilist_v2025_short.xlsx
+bbb --output data/birds.csv      # change the output path
+bbb --no-download                # require local source files, never fetch
+bbb --cbro-file path/to.xlsx     # use a specific CBRO / AviList copy
+bbb --locale pt                  # eBird common-name locale (default: en)
 ```
-
-`--download` pulls the v2025 (11-Jun) Short spreadsheet directly from
-[avilist.org](https://www.avilist.org/checklist/v2025/). Once the file is
-present the command runs fully offline. Merges by scientific name and adds
-`english_name_avilist`,
-`avilist_matched`, and `name_disputed_avilist`. You can chain it on top of the
-eBird output (`--input ...cbro_species_ebird.csv`) to triangulate all three
-authorities in a single file.
 
 ## Development
 
