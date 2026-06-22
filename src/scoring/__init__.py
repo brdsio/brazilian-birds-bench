@@ -10,5 +10,14 @@ what is stored on disk.
 from __future__ import annotations
 
 from .normalize import normalize_for_match
+from .scorer import score_results, score_row
+from .taxonomy import build_name_index, classify_error, taxonomic_distance
 
-__all__ = ["normalize_for_match"]
+__all__ = [
+    "build_name_index",
+    "classify_error",
+    "normalize_for_match",
+    "score_results",
+    "score_row",
+    "taxonomic_distance",
+]

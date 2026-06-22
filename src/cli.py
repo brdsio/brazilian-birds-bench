@@ -1,13 +1,13 @@
-"""``bbb`` CLI -- data pipeline for the brazilian-birds-bench benchmark.
+"""``bbb`` CLI -- data pipeline and benchmark runner for brazilian-birds-bench.
 
-A single command runs the whole pipeline end-to-end:
+Subcommands:
 
-    bbb   Download CBRO + AviList, fetch the eBird taxonomy, merge all three
-          authorities by scientific name, and write one final CSV carrying both
-          name_disputed columns.
+    bbb build   Download CBRO + AviList, fetch the eBird taxonomy, merge all
+                three authorities by scientific name, and write the final CSV.
 
-The command is intentionally thin: all logic lives in :mod:`src.parsing` and
-:mod:`src.enrichment`. Here we only wire arguments to calls.
+    bbb run     Run the benchmark: send every Portuguese name to an LLM via
+                OpenRouter, score the responses, and write a results CSV.
+
 """
 
 from __future__ import annotations
@@ -35,7 +35,6 @@ ZENODO_URL = (
     "2021.07.26%20CBRO%202021%20Zenodo%20Release.xlsx?download=1"
 )
 
-# Direct download for the AviList Short spreadsheet (v2025, 11-Jun release).
 AVILIST_URL = (
     "https://www.avilist.org/wp-content/uploads/2025/06/"
     "AviList-v2025-11Jun-short.xlsx"
@@ -43,7 +42,12 @@ AVILIST_URL = (
 
 DEFAULT_CBRO_FILE = "data_raw/cbro_2021.xlsx"
 DEFAULT_AVILIST_FILE = "data_raw/avilist_v2025_short.xlsx"
-DEFAULT_OUTPUT = "src/data/benchmark_dataset.csv"
+DEFAULT_DATASET = "src/data/benchmark_dataset.csv"
+
+
+def _model_slug(model: str) -> str:
+    """Turn a model ID like 'google/gemini-2.0-flash' into a filename-safe slug."""
+    return model.replace("/", "--")
 
 
 def _write_csv(rows: list[dict], fieldnames: list[str], out_path: Path) -> None:
@@ -66,7 +70,21 @@ def _download(url: str, dest: Path) -> None:
     click.echo(f"Saved to {dest}", err=True)
 
 
-@click.command()
+# ---------------------------------------------------------------------------
+# CLI group
+# ---------------------------------------------------------------------------
+
+@click.group()
+@click.version_option()
+def cli() -> None:
+    """brazilian-birds-bench: benchmark LLM knowledge on Brazilian bird names."""
+
+
+# ---------------------------------------------------------------------------
+# bbb build
+# ---------------------------------------------------------------------------
+
+@cli.command()
 @click.option(
     "--cbro-file", "cbro_path", type=click.Path(path_type=Path),
     default=DEFAULT_CBRO_FILE, show_default=True,
@@ -79,7 +97,7 @@ def _download(url: str, dest: Path) -> None:
 )
 @click.option(
     "--output", "output_path", type=click.Path(path_type=Path),
-    default=DEFAULT_OUTPUT, show_default=True,
+    default=DEFAULT_DATASET, show_default=True,
     help="Final CSV with all three authorities and both name_disputed columns.",
 )
 @click.option(
@@ -94,19 +112,9 @@ def _download(url: str, dest: Path) -> None:
     "--download/--no-download", default=True, show_default=True,
     help="Download CBRO/AviList sources when the local file is missing.",
 )
-@click.version_option()
-def cli(cbro_path: Path, avilist_path: Path, output_path: Path,
-        token: str | None, locale: str, download: bool) -> None:
-    """Build the brazilian-birds-bench dataset in one shot.
-
-    Downloads any missing source (CBRO from Zenodo, AviList from avilist.org),
-    fetches the eBird taxonomy, and merges all three authorities by scientific
-    name into one CSV carrying both ``name_disputed`` (eBird vs CBRO) and
-    ``name_disputed_avilist`` (AviList vs CBRO). Local source files, if present,
-    are reused as a cache; pass ``--no-download`` to require them instead.
-    Needs an eBird token: set EBIRD_API_TOKEN in a .env file or pass --token.
-    """
-    # 1. CBRO -> base records (offline once the .xlsx is local).
+def build(cbro_path: Path, avilist_path: Path, output_path: Path,
+          token: str | None, locale: str, download: bool) -> None:
+    """Build the benchmark dataset from CBRO, eBird, and AviList."""
     if download and not cbro_path.exists():
         _download(ZENODO_URL, cbro_path)
     if not cbro_path.exists():
@@ -115,12 +123,10 @@ def cli(cbro_path: Path, avilist_path: Path, output_path: Path,
         )
     records = parse_cbro(cbro_path)
 
-    # 2. eBird -> english_name_ebird + name_disputed (online; needs a token).
     resolved_token = get_token(token)
     ebird_index = fetch_ebird_taxonomy(resolved_token, locale=locale)
     records, ebird_matched = enrich_rows_ebird(records, ebird_index)
 
-    # 3. AviList -> english_name_avilist + name_disputed_avilist (offline once local).
     if download and not avilist_path.exists():
         _download(AVILIST_URL, avilist_path)
     if not avilist_path.exists():
@@ -131,7 +137,6 @@ def cli(cbro_path: Path, avilist_path: Path, output_path: Path,
     avilist_index = load_avilist_index(avilist_path)
     records, avilist_matched = enrich_rows_avilist(records, avilist_index)
 
-    # 4. One final CSV with every column.
     fields = OUTPUT_FIELDS + EBIRD_FIELDS + AVILIST_FIELDS
     _write_csv(records, fields, output_path)
 
@@ -148,6 +153,117 @@ def cli(cbro_path: Path, avilist_path: Path, output_path: Path,
         f"{total - avilist_matched} unmatched | {av_disputed} name_disputed_avilist",
         err=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# bbb run
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option(
+    "--model", required=True,
+    help="OpenRouter model ID (e.g. google/gemini-2.0-flash).",
+)
+@click.option(
+    "--dataset", "dataset_path", type=click.Path(exists=True, path_type=Path),
+    default=DEFAULT_DATASET, show_default=True,
+    help="Input dataset CSV (the output of 'bbb build').",
+)
+@click.option(
+    "--output", "output_path", type=click.Path(path_type=Path),
+    default=None,
+    help="Results CSV path. Defaults to results/<model-slug>.csv.",
+)
+@click.option(
+    "--token", default=None,
+    help="OpenRouter API key. Defaults to the OPENROUTER_API_KEY env var.",
+)
+@click.option(
+    "--max-tokens", type=int, default=1024, show_default=True,
+    help="Maximum tokens in the LLM response.",
+)
+@click.option(
+    "--temperature", type=float, default=0.0, show_default=True,
+    help="Sampling temperature (0 = deterministic).",
+)
+def run(model: str, dataset_path: Path, output_path: Path | None,
+        token: str | None, max_tokens: int, temperature: float) -> None:
+    """Run the benchmark against an LLM via OpenRouter."""
+    from .runner import get_openrouter_token, run_benchmark
+    from .scoring import score_results
+
+    if output_path is None:
+        output_path = Path(f"results/{_model_slug(model)}.csv")
+
+    resolved_token = get_openrouter_token(token)
+
+    click.echo(
+        f"Model:       {model}\n"
+        f"Dataset:     {dataset_path}\n"
+        f"Output:      {output_path}\n"
+        f"Temperature: {temperature}\n"
+        f"Max tokens:  {max_tokens}",
+        err=True,
+    )
+
+    results = run_benchmark(
+        dataset_path, model, resolved_token,
+        temperature=temperature, max_tokens=max_tokens,
+    )
+    scored = score_results(results)
+
+    fieldnames = list(scored[0].keys()) if scored else []
+    _write_csv(scored, fieldnames, output_path)
+
+    _print_run_summary(scored, output_path)
+
+
+def _print_run_summary(scored: list[dict], output_path: Path) -> None:
+    total = len(scored)
+    if total == 0:
+        click.echo("No results.", err=True)
+        return
+
+    exact = sum(1 for r in scored if r["exact_match"])
+    acceptable = sum(1 for r in scored if r["acceptable_match"])
+    truncated = sum(1 for r in scored if r["truncated"])
+    errors = sum(1 for r in scored if r["finish_reason"] == "error")
+
+    click.echo(f"\n{'='*50}", err=True)
+    click.echo(f"Results: {total} species -> {output_path}", err=True)
+    click.echo(f"  Exact match:      {exact}/{total} ({100*exact/total:.1f}%)", err=True)
+    click.echo(f"  Acceptable match: {acceptable}/{total} ({100*acceptable/total:.1f}%)", err=True)
+    if truncated:
+        click.echo(
+            f"  Truncated:        {truncated}/{total} ({100*truncated/total:.1f}%) "
+            f"[finish_reason=length]",
+            err=True,
+        )
+    if errors:
+        click.echo(f"  Errors:           {errors}/{total} ({100*errors/total:.1f}%)", err=True)
+
+    source_counts: dict[str, int] = {}
+    for r in scored:
+        src = r.get("match_source", "")
+        if src:
+            source_counts[src] = source_counts.get(src, 0) + 1
+    if source_counts:
+        click.echo("\n  Match sources:", err=True)
+        for src, count in sorted(source_counts.items()):
+            click.echo(f"    {src}: {count}", err=True)
+
+    error_counts: dict[str, int] = {}
+    for r in scored:
+        et = r.get("error_type", "")
+        if et and et != "correct":
+            error_counts[et] = error_counts.get(et, 0) + 1
+    if error_counts:
+        click.echo("\n  Error types:", err=True)
+        for et, count in sorted(error_counts.items()):
+            click.echo(f"    {et}: {count}", err=True)
+
+    click.echo(f"{'='*50}", err=True)
+
 
 
 if __name__ == "__main__":
