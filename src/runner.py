@@ -12,10 +12,9 @@ well we can coax it with examples or chain-of-thought.
 
 from __future__ import annotations
 
-import csv
 import os
 import sys
-from pathlib import Path
+import time
 
 import requests
 
@@ -29,6 +28,8 @@ SYSTEM_PROMPT = (
 )
 
 USER_TEMPLATE = "{portuguese_name}"
+
+ESTIMATED_PROMPT_TOKENS = 50
 
 
 def get_openrouter_token(explicit: str | None = None) -> str:
@@ -59,10 +60,9 @@ def call_llm(
 ) -> dict[str, object]:
     """Call OpenRouter for a single bird name.
 
-    Returns ``{"model_response": str, "finish_reason": str, "truncated": bool}``.
-    When ``finish_reason`` is ``"length"`` the response was cut off before the
-    model finished -- ``truncated`` is set to ``True`` so the scorer and the
-    summary can flag it.
+    Returns model_response, finish_reason, truncated, latency_ms, and token
+    usage fields.  When ``finish_reason`` is ``"length"`` the response was cut
+    off before the model finished -- ``truncated`` is ``True``.
     """
     headers = {
         "Authorization": f"Bearer {token}",
@@ -80,79 +80,91 @@ def call_llm(
         "max_tokens": max_tokens,
     }
 
+    t0 = time.monotonic()
     resp = requests.post(
         OPENROUTER_URL, headers=headers, json=payload, timeout=120,
     )
+    latency_ms = round((time.monotonic() - t0) * 1000)
+
     resp.raise_for_status()
     data = resp.json()
 
     choice = data["choices"][0]
     finish = choice.get("finish_reason", "")
+    usage = data.get("usage") or {}
+
     return {
         "model_response": choice["message"]["content"].strip(),
         "finish_reason": finish,
         "truncated": finish == "length",
+        "latency_ms": latency_ms,
+        "prompt_tokens": usage.get("prompt_tokens", 0),
+        "completion_tokens": usage.get("completion_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
     }
 
 
-def run_benchmark(
-    dataset_path: Path,
+def process_row(
+    row: dict[str, object],
     model: str,
     token: str,
     *,
     temperature: float = 0.0,
     max_tokens: int = 1024,
-) -> list[dict[str, object]]:
-    """Run the benchmark on every row in *dataset_path*.
+    index: int = 0,
+    total: int = 0,
+) -> dict[str, object]:
+    """Call the LLM for one dataset row, with error handling and progress output.
 
-    Returns a list of dicts: the original dataset columns plus
-    ``model``, ``model_response``, ``finish_reason``, and ``truncated``.
+    Returns the original row merged with model/response/latency/token fields.
     """
-    with open(dataset_path, encoding="utf-8-sig", newline="") as fh:
-        rows = list(csv.DictReader(fh))
+    pt_name = row["portuguese_name"]
+    label = f"[{index}/{total}] " if total else ""
+    print(f"{label}{pt_name} ...", end=" ", file=sys.stderr, flush=True)
 
-    results: list[dict[str, object]] = []
-    total = len(rows)
+    try:
+        llm = call_llm(
+            pt_name, model, token,
+            temperature=temperature, max_tokens=max_tokens,
+        )
+    except requests.HTTPError as exc:
+        body = ""
+        if exc.response is not None:
+            try:
+                body = exc.response.json().get("error", {}).get("message", "")
+            except Exception:
+                body = exc.response.text[:200]
+        error_msg = f"{exc}{f' -- {body}' if body else ''}"
+        llm = {
+            "model_response": "",
+            "finish_reason": "error",
+            "truncated": False,
+            "latency_ms": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "error": error_msg,
+        }
+    except Exception as exc:
+        llm = {
+            "model_response": "",
+            "finish_reason": "error",
+            "truncated": False,
+            "latency_ms": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "error": str(exc),
+        }
 
-    for i, row in enumerate(rows, 1):
-        pt_name = row["portuguese_name"]
-        print(f"[{i}/{total}] {pt_name} ...", end=" ", file=sys.stderr, flush=True)
+    tag = ""
+    if llm.get("truncated"):
+        tag = " [TRUNCATED]"
+    elif llm.get("finish_reason") == "error":
+        tag = f" [ERROR: {llm.get('error', 'unknown')}]"
+    print(
+        f"{llm.get('model_response', '')}{tag}  ({llm.get('latency_ms', 0)}ms)",
+        file=sys.stderr,
+    )
 
-        try:
-            llm = call_llm(
-                pt_name, model, token,
-                temperature=temperature, max_tokens=max_tokens,
-            )
-        except requests.HTTPError as exc:
-            body = ""
-            if exc.response is not None:
-                try:
-                    body = exc.response.json().get("error", {}).get("message", "")
-                except Exception:
-                    body = exc.response.text[:200]
-            error_msg = f"{exc}{f' -- {body}' if body else ''}"
-            llm = {
-                "model_response": "",
-                "finish_reason": "error",
-                "truncated": False,
-                "error": error_msg,
-            }
-        except Exception as exc:
-            llm = {
-                "model_response": "",
-                "finish_reason": "error",
-                "truncated": False,
-                "error": str(exc),
-            }
-
-        result = {**row, "model": model, **llm}
-        results.append(result)
-
-        tag = ""
-        if llm.get("truncated"):
-            tag = " [TRUNCATED]"
-        elif llm.get("finish_reason") == "error":
-            tag = f" [ERROR: {llm.get('error', 'unknown')}]"
-        print(f"{llm.get('model_response', '')}{tag}", file=sys.stderr)
-
-    return results
+    return {**row, "model": model, **llm}

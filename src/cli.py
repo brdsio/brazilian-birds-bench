@@ -5,14 +5,19 @@ Subcommands:
     bbb build   Download CBRO + AviList, fetch the eBird taxonomy, merge all
                 three authorities by scientific name, and write the final CSV.
 
-    bbb run     Run the benchmark: send every Portuguese name to an LLM via
-                OpenRouter, score the responses, and write a results CSV.
+    bbb run     Run the benchmark against an LLM via OpenRouter, saving each
+                result incrementally. Supports --resume and --dry-run.
 
+    bbb score   Re-apply scoring to an existing results CSV (no LLM calls).
+
+    bbb audit   Sample errors for manual review.
 """
 
 from __future__ import annotations
 
 import csv
+import random
+import sys
 from pathlib import Path
 
 import click
@@ -44,10 +49,20 @@ DEFAULT_CBRO_FILE = "data_raw/cbro_2021.xlsx"
 DEFAULT_AVILIST_FILE = "data_raw/avilist_v2025_short.xlsx"
 DEFAULT_DATASET = "src/data/benchmark_dataset.csv"
 
+AUDIT_COLUMNS = [
+    "portuguese_name", "english_name_cbro", "model_response",
+    "exact_match", "acceptable_match", "match_source",
+    "error_type", "taxonomic_distance", "human_label",
+]
+
 
 def _model_slug(model: str) -> str:
-    """Turn a model ID like 'google/gemini-2.0-flash' into a filename-safe slug."""
     return model.replace("/", "--")
+
+
+def _load_csv(path: Path) -> list[dict[str, str]]:
+    with open(path, encoding="utf-8-sig", newline="") as fh:
+        return list(csv.DictReader(fh))
 
 
 def _write_csv(rows: list[dict], fieldnames: list[str], out_path: Path) -> None:
@@ -186,36 +201,120 @@ def build(cbro_path: Path, avilist_path: Path, output_path: Path,
     "--temperature", type=float, default=0.0, show_default=True,
     help="Sampling temperature (0 = deterministic).",
 )
+@click.option(
+    "--resume", is_flag=True, default=False,
+    help="Resume an interrupted run: skip completed rows, retry errors.",
+)
+@click.option(
+    "--dry-run", is_flag=True, default=False,
+    help="Estimate token count and cost without making API calls.",
+)
 def run(model: str, dataset_path: Path, output_path: Path | None,
-        token: str | None, max_tokens: int, temperature: float) -> None:
+        token: str | None, max_tokens: int, temperature: float,
+        resume: bool, dry_run: bool) -> None:
     """Run the benchmark against an LLM via OpenRouter."""
-    from .runner import get_openrouter_token, run_benchmark
-    from .scoring import score_results
+    from .runner import ESTIMATED_PROMPT_TOKENS, get_openrouter_token, process_row
+    from .scoring import build_name_index, score_row
 
     if output_path is None:
         output_path = Path(f"results/{_model_slug(model)}.csv")
 
-    resolved_token = get_openrouter_token(token)
+    dataset = _load_csv(dataset_path)
+    total = len(dataset)
 
     click.echo(
         f"Model:       {model}\n"
-        f"Dataset:     {dataset_path}\n"
+        f"Dataset:     {dataset_path} ({total} species)\n"
         f"Output:      {output_path}\n"
         f"Temperature: {temperature}\n"
         f"Max tokens:  {max_tokens}",
         err=True,
     )
 
-    results = run_benchmark(
-        dataset_path, model, resolved_token,
-        temperature=temperature, max_tokens=max_tokens,
-    )
-    scored = score_results(results)
+    if dry_run:
+        est_prompt = total * ESTIMATED_PROMPT_TOKENS
+        est_completion = total * 10
+        click.echo(
+            f"\n-- Dry run estimate --\n"
+            f"  Species:            {total}\n"
+            f"  Est. prompt tokens: ~{est_prompt:,}\n"
+            f"  Est. completion:    ~{est_completion:,}\n"
+            f"  Est. total tokens:  ~{est_prompt + est_completion:,}\n"
+            f"\n  Check model pricing at https://openrouter.ai/models/{model}",
+            err=True,
+        )
+        return
 
-    fieldnames = list(scored[0].keys()) if scored else []
-    _write_csv(scored, fieldnames, output_path)
+    resolved_token = get_openrouter_token(token)
+    name_index = build_name_index(dataset)
 
-    _print_run_summary(scored, output_path)
+    # --- Resume logic ---
+    kept: list[dict[str, str]] = []
+    retry_indices: set[int] = set()
+    start_from = 0
+
+    if resume and output_path.exists():
+        existing = _load_csv(output_path)
+        for i, row in enumerate(existing):
+            if row.get("finish_reason") == "error":
+                retry_indices.add(i)
+            else:
+                kept.append(row)
+        start_from = len(existing)
+        n_retry = len(retry_indices)
+        click.echo(
+            f"Resuming: {len(kept)} completed, {n_retry} to retry, "
+            f"{max(0, total - start_from)} new rows.",
+            err=True,
+        )
+
+    # --- Determine fieldnames from a dry score of the first row ---
+    dummy_result = {**dataset[0], "model": model, "model_response": "",
+                    "finish_reason": "", "truncated": False, "latency_ms": 0,
+                    "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    fieldnames = list(score_row(dummy_result, name_index).keys())
+
+    # --- Run loop with incremental save ---
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    all_scored: list[dict] = []
+
+    with open(output_path, "w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+
+        # Write kept rows first (resume: non-error rows)
+        for row in kept:
+            scored = score_row(row, name_index)
+            writer.writerow(scored)
+            all_scored.append(scored)
+
+        # Retry error rows
+        for idx in sorted(retry_indices):
+            row = dataset[idx]
+            result = process_row(
+                row, model, resolved_token,
+                temperature=temperature, max_tokens=max_tokens,
+                index=idx + 1, total=total,
+            )
+            scored = score_row(result, name_index)
+            writer.writerow(scored)
+            fh.flush()
+            all_scored.append(scored)
+
+        # Process remaining new rows
+        for i in range(start_from, total):
+            row = dataset[i]
+            result = process_row(
+                row, model, resolved_token,
+                temperature=temperature, max_tokens=max_tokens,
+                index=i + 1, total=total,
+            )
+            scored = score_row(result, name_index)
+            writer.writerow(scored)
+            fh.flush()
+            all_scored.append(scored)
+
+    _print_run_summary(all_scored, output_path)
 
 
 def _print_run_summary(scored: list[dict], output_path: Path) -> None:
@@ -224,12 +323,12 @@ def _print_run_summary(scored: list[dict], output_path: Path) -> None:
         click.echo("No results.", err=True)
         return
 
-    exact = sum(1 for r in scored if r["exact_match"])
-    acceptable = sum(1 for r in scored if r["acceptable_match"])
-    truncated = sum(1 for r in scored if r["truncated"])
-    errors = sum(1 for r in scored if r["finish_reason"] == "error")
+    exact = sum(1 for r in scored if r.get("exact_match") in (True, "True"))
+    acceptable = sum(1 for r in scored if r.get("acceptable_match") in (True, "True"))
+    truncated = sum(1 for r in scored if r.get("truncated") in (True, "True"))
+    errors = sum(1 for r in scored if r.get("finish_reason") == "error")
 
-    click.echo(f"\n{'='*50}", err=True)
+    click.echo(f"\n{'='*55}", err=True)
     click.echo(f"Results: {total} species -> {output_path}", err=True)
     click.echo(f"  Exact match:      {exact}/{total} ({100*exact/total:.1f}%)", err=True)
     click.echo(f"  Acceptable match: {acceptable}/{total} ({100*acceptable/total:.1f}%)", err=True)
@@ -242,6 +341,32 @@ def _print_run_summary(scored: list[dict], output_path: Path) -> None:
     if errors:
         click.echo(f"  Errors:           {errors}/{total} ({100*errors/total:.1f}%)", err=True)
 
+    # Token / latency stats
+    latencies = [
+        int(r["latency_ms"]) for r in scored
+        if str(r.get("latency_ms", "0")).isdigit() and int(r["latency_ms"]) > 0
+    ]
+    prompt_tok = sum(int(r.get("prompt_tokens", 0)) for r in scored)
+    comp_tok = sum(int(r.get("completion_tokens", 0)) for r in scored)
+    total_tok = sum(int(r.get("total_tokens", 0)) for r in scored)
+
+    if latencies:
+        latencies.sort()
+        avg = sum(latencies) / len(latencies)
+        p95_idx = int(len(latencies) * 0.95)
+        p95 = latencies[min(p95_idx, len(latencies) - 1)]
+        click.echo(
+            f"\n  Latency:  avg {avg:.0f}ms  |  p95 {p95}ms",
+            err=True,
+        )
+    if total_tok:
+        click.echo(
+            f"  Tokens:   {prompt_tok:,} prompt + {comp_tok:,} completion "
+            f"= {total_tok:,} total",
+            err=True,
+        )
+
+    # Match sources
     source_counts: dict[str, int] = {}
     for r in scored:
         src = r.get("match_source", "")
@@ -252,6 +377,7 @@ def _print_run_summary(scored: list[dict], output_path: Path) -> None:
         for src, count in sorted(source_counts.items()):
             click.echo(f"    {src}: {count}", err=True)
 
+    # Error types
     error_counts: dict[str, int] = {}
     for r in scored:
         et = r.get("error_type", "")
@@ -262,8 +388,106 @@ def _print_run_summary(scored: list[dict], output_path: Path) -> None:
         for et, count in sorted(error_counts.items()):
             click.echo(f"    {et}: {count}", err=True)
 
-    click.echo(f"{'='*50}", err=True)
+    click.echo(f"{'='*55}", err=True)
 
+
+# ---------------------------------------------------------------------------
+# bbb score
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option(
+    "--input", "input_path", required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Results CSV from 'bbb run'.",
+)
+@click.option(
+    "--output", "output_path", type=click.Path(path_type=Path),
+    default=None,
+    help="Output CSV. Defaults to overwriting the input file.",
+)
+def score(input_path: Path, output_path: Path | None) -> None:
+    """Re-apply scoring to an existing results CSV (no LLM calls)."""
+    from .scoring import build_name_index, score_row
+
+    if output_path is None:
+        output_path = input_path
+
+    rows = _load_csv(input_path)
+    name_index = build_name_index(rows)
+    scored = [score_row(row, name_index) for row in rows]
+
+    fieldnames = list(scored[0].keys()) if scored else []
+    _write_csv(scored, fieldnames, output_path)
+
+    click.echo(f"Re-scored {len(scored)} rows -> {output_path}", err=True)
+    _print_run_summary(scored, output_path)
+
+
+# ---------------------------------------------------------------------------
+# bbb audit
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option(
+    "--input", "input_path", required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Results CSV from 'bbb run'.",
+)
+@click.option(
+    "--sample", "sample_size", type=int, default=50, show_default=True,
+    help="Number of errors to sample.",
+)
+@click.option(
+    "--output", "output_path", type=click.Path(path_type=Path),
+    default=None,
+    help="Audit CSV. Defaults to audit/<input-stem>_audit.csv.",
+)
+@click.option(
+    "--seed", type=int, default=42, show_default=True,
+    help="Random seed for reproducible sampling.",
+)
+def audit(input_path: Path, sample_size: int,
+          output_path: Path | None, seed: int) -> None:
+    """Sample errors from a results CSV for manual review."""
+    rows = _load_csv(input_path)
+
+    errors = [r for r in rows if r.get("error_type", "correct") != "correct"]
+    if not errors:
+        click.echo("No errors to audit.", err=True)
+        return
+
+    rng = random.Random(seed)
+    sampled = rng.sample(errors, min(sample_size, len(errors)))
+
+    if output_path is None:
+        output_path = Path(f"audit/{input_path.stem}_audit.csv")
+
+    audit_rows = []
+    for r in sampled:
+        audit_row = {col: r.get(col, "") for col in AUDIT_COLUMNS if col != "human_label"}
+        audit_row["human_label"] = ""
+        audit_rows.append(audit_row)
+
+    _write_csv(audit_rows, AUDIT_COLUMNS, output_path)
+
+    # Breakdown of sampled error types
+    type_counts: dict[str, int] = {}
+    for r in sampled:
+        et = r.get("error_type", "unknown")
+        type_counts[et] = type_counts.get(et, 0) + 1
+
+    click.echo(
+        f"Sampled {len(sampled)} errors (of {len(errors)} total) -> {output_path}",
+        err=True,
+    )
+    for et, count in sorted(type_counts.items()):
+        click.echo(f"  {et}: {count}", err=True)
+    click.echo(
+        f"\nFill the 'human_label' column, then use 'bbb score' to re-apply "
+        f"scoring after adjusting classifiers.",
+        err=True,
+    )
 
 
 if __name__ == "__main__":
