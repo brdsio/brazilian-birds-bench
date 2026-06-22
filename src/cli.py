@@ -202,6 +202,12 @@ def build(cbro_path: Path, avilist_path: Path, output_path: Path,
     help="Sampling temperature (0 = deterministic).",
 )
 @click.option(
+    "--reasoning", "reasoning_effort",
+    type=click.Choice(["none", "low", "medium", "high"]),
+    default="none", show_default=True,
+    help="Reasoning effort level sent to the model.",
+)
+@click.option(
     "--resume", is_flag=True, default=False,
     help="Resume an interrupted run: skip completed rows, retry errors.",
 )
@@ -211,20 +217,29 @@ def build(cbro_path: Path, avilist_path: Path, output_path: Path,
 )
 def run(model: str, dataset_path: Path, output_path: Path | None,
         token: str | None, max_tokens: int, temperature: float,
-        resume: bool, dry_run: bool) -> None:
+        reasoning_effort: str, resume: bool, dry_run: bool) -> None:
     """Run the benchmark against an LLM via OpenRouter."""
     from .runner import ESTIMATED_PROMPT_TOKENS, get_openrouter_token, process_row
     from .scoring import build_name_index, score_row
 
     if output_path is None:
-        output_path = Path(f"results/{_model_slug(model)}.csv")
+        slug = _model_slug(model)
+        effort_tag = f"_reasoning-{reasoning_effort}" if reasoning_effort != "none" else ""
+        output_path = Path(f"results/{slug}{effort_tag}.csv")
 
-    dataset = _load_csv(dataset_path)
+    dataset_raw = _load_csv(dataset_path)
+    dataset = [
+        r for r in dataset_raw
+        if r.get("ebird_matched") != "False" and r.get("avilist_matched") != "False"
+    ]
+    skipped = len(dataset_raw) - len(dataset)
     total = len(dataset)
 
     click.echo(
         f"Model:       {model}\n"
-        f"Dataset:     {dataset_path} ({total} species)\n"
+        f"Reasoning:   {reasoning_effort}\n"
+        f"Dataset:     {dataset_path} ({total} species"
+        f"{f', {skipped} skipped without eBird/AviList match' if skipped else ''})\n"
         f"Output:      {output_path}\n"
         f"Temperature: {temperature}\n"
         f"Max tokens:  {max_tokens}",
@@ -270,8 +285,10 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
 
     # --- Determine fieldnames from a dry score of the first row ---
     dummy_result = {**dataset[0], "model": model, "model_response": "",
-                    "finish_reason": "", "truncated": False, "latency_ms": 0,
-                    "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                    "finish_reason": "", "truncated": False,
+                    "reasoning_effort": "", "latency_ms": 0,
+                    "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                    "error": ""}
     fieldnames = list(score_row(dummy_result, name_index).keys())
 
     # --- Run loop with incremental save ---
@@ -294,6 +311,7 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
             result = process_row(
                 row, model, resolved_token,
                 temperature=temperature, max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
                 index=idx + 1, total=total,
             )
             scored = score_row(result, name_index)
@@ -307,6 +325,7 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
             result = process_row(
                 row, model, resolved_token,
                 temperature=temperature, max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
                 index=i + 1, total=total,
             )
             scored = score_row(result, name_index)

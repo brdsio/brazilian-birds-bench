@@ -57,6 +57,7 @@ def call_llm(
     *,
     temperature: float = 0.0,
     max_tokens: int = 1024,
+    reasoning_effort: str = "none",
 ) -> dict[str, object]:
     """Call OpenRouter for a single bird name.
 
@@ -68,22 +69,39 @@ def call_llm(
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": USER_TEMPLATE.format(
+            portuguese_name=portuguese_name,
+        )},
+    ]
+    actual_effort = reasoning_effort
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": USER_TEMPLATE.format(
-                portuguese_name=portuguese_name,
-            )},
-        ],
+        "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        "reasoning": {"effort": actual_effort},
     }
 
     t0 = time.monotonic()
     resp = requests.post(
         OPENROUTER_URL, headers=headers, json=payload, timeout=120,
     )
+
+    # Some models require reasoning — retry with "low" if "none" is rejected.
+    if (
+        actual_effort == "none"
+        and resp.status_code == 400
+        and "reasoning" in resp.text.lower()
+    ):
+        actual_effort = "low"
+        payload["reasoning"] = {"effort": actual_effort}
+        t0 = time.monotonic()
+        resp = requests.post(
+            OPENROUTER_URL, headers=headers, json=payload, timeout=120,
+        )
+
     latency_ms = round((time.monotonic() - t0) * 1000)
 
     resp.raise_for_status()
@@ -97,6 +115,7 @@ def call_llm(
         "model_response": choice["message"]["content"].strip(),
         "finish_reason": finish,
         "truncated": finish == "length",
+        "reasoning_effort": actual_effort,
         "latency_ms": latency_ms,
         "prompt_tokens": usage.get("prompt_tokens", 0),
         "completion_tokens": usage.get("completion_tokens", 0),
@@ -111,6 +130,7 @@ def process_row(
     *,
     temperature: float = 0.0,
     max_tokens: int = 1024,
+    reasoning_effort: str = "none",
     index: int = 0,
     total: int = 0,
 ) -> dict[str, object]:
@@ -126,6 +146,7 @@ def process_row(
         llm = call_llm(
             pt_name, model, token,
             temperature=temperature, max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
         )
     except requests.HTTPError as exc:
         body = ""
@@ -139,6 +160,7 @@ def process_row(
             "model_response": "",
             "finish_reason": "error",
             "truncated": False,
+            "reasoning_effort": reasoning_effort,
             "latency_ms": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -150,6 +172,7 @@ def process_row(
             "model_response": "",
             "finish_reason": "error",
             "truncated": False,
+            "reasoning_effort": reasoning_effort,
             "latency_ms": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,
