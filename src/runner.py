@@ -12,6 +12,7 @@ well we can coax it with examples or chain-of-thought.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -57,7 +58,8 @@ def call_llm(
     *,
     temperature: float = 0.0,
     max_tokens: int = 1024,
-    reasoning_effort: str = "none",
+    reasoning_config: dict[str, object] | None = None,
+    benchmark_mode: str = "",
 ) -> dict[str, object]:
     """Call OpenRouter for a single bird name.
 
@@ -75,36 +77,43 @@ def call_llm(
             portuguese_name=portuguese_name,
         )},
     ]
-    actual_effort = reasoning_effort
-    payload = {
+    payload: dict[str, object] = {
         "model": model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "reasoning": {"effort": actual_effort},
     }
+    if reasoning_config is not None:
+        payload["reasoning"] = reasoning_config
 
     t0 = time.monotonic()
     resp = requests.post(
         OPENROUTER_URL, headers=headers, json=payload, timeout=120,
     )
 
-    # Some models require reasoning — retry with "low" if "none" is rejected.
+    # Some models have mandatory reasoning and reject ``effort: none`` with a
+    # 4xx.  In that case fall back to omitting the reasoning field entirely so
+    # the run still produces a result (the model just reasons at its default).
     if (
-        actual_effort == "none"
-        and resp.status_code == 400
-        and "reasoning" in resp.text.lower()
+        resp.status_code != 200
+        and reasoning_config == {"effort": "none"}
+        and 400 <= resp.status_code < 500
     ):
-        actual_effort = "low"
-        payload["reasoning"] = {"effort": actual_effort}
-        t0 = time.monotonic()
+        payload.pop("reasoning", None)
         resp = requests.post(
             OPENROUTER_URL, headers=headers, json=payload, timeout=120,
         )
 
     latency_ms = round((time.monotonic() - t0) * 1000)
 
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        body = resp.text[:500]
+        raise requests.HTTPError(
+            f"OpenRouter {resp.status_code} for model={model} "
+            f"reasoning={reasoning_config!r}: {body}",
+            response=resp,
+        )
+
     data = resp.json()
 
     choice = data["choices"][0]
@@ -115,7 +124,8 @@ def call_llm(
         "model_response": choice["message"]["content"].strip(),
         "finish_reason": finish,
         "truncated": finish == "length",
-        "reasoning_effort": actual_effort,
+        "reasoning_config": json.dumps(reasoning_config) if reasoning_config else "",
+        "benchmark_mode": benchmark_mode,
         "latency_ms": latency_ms,
         "prompt_tokens": usage.get("prompt_tokens", 0),
         "completion_tokens": usage.get("completion_tokens", 0),
@@ -130,7 +140,8 @@ def process_row(
     *,
     temperature: float = 0.0,
     max_tokens: int = 1024,
-    reasoning_effort: str = "none",
+    reasoning_config: dict[str, object] | None = None,
+    benchmark_mode: str = "",
     index: int = 0,
     total: int = 0,
     score_fn: object = None,
@@ -145,11 +156,14 @@ def process_row(
     label = f"[{index}/{total}] " if total else ""
     print(f"{label}{pt_name} ...", end=" ", file=sys.stderr, flush=True)
 
+    rc_serialized = json.dumps(reasoning_config) if reasoning_config else ""
+
     try:
         llm = call_llm(
             pt_name, model, token,
             temperature=temperature, max_tokens=max_tokens,
-            reasoning_effort=reasoning_effort,
+            reasoning_config=reasoning_config,
+            benchmark_mode=benchmark_mode,
         )
     except requests.HTTPError as exc:
         body = ""
@@ -163,7 +177,8 @@ def process_row(
             "model_response": "",
             "finish_reason": "error",
             "truncated": False,
-            "reasoning_effort": reasoning_effort,
+            "reasoning_config": rc_serialized,
+            "benchmark_mode": benchmark_mode,
             "latency_ms": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -175,7 +190,8 @@ def process_row(
             "model_response": "",
             "finish_reason": "error",
             "truncated": False,
-            "reasoning_effort": reasoning_effort,
+            "reasoning_config": rc_serialized,
+            "benchmark_mode": benchmark_mode,
             "latency_ms": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,

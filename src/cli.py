@@ -16,6 +16,7 @@ Subcommands:
 from __future__ import annotations
 
 import csv
+import json
 import random
 import sys
 from pathlib import Path
@@ -205,7 +206,19 @@ def build(cbro_path: Path, avilist_path: Path, output_path: Path,
     "--reasoning", "reasoning_effort",
     type=click.Choice(["none", "low", "medium", "high"]),
     default="none", show_default=True,
-    help="Reasoning effort level sent to the model.",
+    help="Reasoning effort level sent to the model (legacy; prefer --benchmark-mode).",
+)
+@click.option(
+    "--benchmark-mode", "benchmark_mode",
+    type=click.Choice(["no_reasoning", "reasoning"]),
+    default=None,
+    help="Benchmark mode. no_reasoning omits reasoning; reasoning uses "
+         "per-model config from benchmark_config.json.",
+)
+@click.option(
+    "--config", "config_path", type=click.Path(path_type=Path),
+    default="benchmark_config.json", show_default=True,
+    help="Path to benchmark configuration file.",
 )
 @click.option(
     "--resume", is_flag=True, default=False,
@@ -217,15 +230,55 @@ def build(cbro_path: Path, avilist_path: Path, output_path: Path,
 )
 def run(model: str, dataset_path: Path, output_path: Path | None,
         token: str | None, max_tokens: int, temperature: float,
-        reasoning_effort: str, resume: bool, dry_run: bool) -> None:
+        reasoning_effort: str, benchmark_mode: str | None,
+        config_path: Path, resume: bool, dry_run: bool) -> None:
     """Run the benchmark against an LLM via OpenRouter."""
     from .runner import ESTIMATED_PROMPT_TOKENS, get_openrouter_token, process_row
     from .scoring import build_name_index, score_row
 
+    # --- Resolve reasoning configuration ---
+    if benchmark_mode is not None and reasoning_effort != "none":
+        raise click.ClickException(
+            "--benchmark-mode and --reasoning are mutually exclusive."
+        )
+
+    reasoning_config: dict[str, object] | None = None
+
+    if benchmark_mode == "no_reasoning":
+        # Explicitly turn reasoning OFF.  Omitting the ``reasoning`` field is
+        # NOT enough: OpenRouter leaves reasoning at the model's default, which
+        # is ON for GPT-5.x / o-series.  ``effort: none`` disables it.  Models
+        # with mandatory reasoning reject this; call_llm falls back to omitting
+        # the field for those.
+        reasoning_config = {"effort": "none"}
+    elif benchmark_mode == "reasoning":
+        with open(config_path, encoding="utf-8") as f:
+            bench_config = json.load(f)
+        model_reasoning = bench_config.get("reasoning_by_model", {}).get(model)
+        if model_reasoning is None:
+            available = list(bench_config.get("reasoning_by_model", {}).keys())
+            raise click.ClickException(
+                f"Model {model!r} not found in reasoning_by_model in {config_path}. "
+                f"Available: {available}"
+            )
+        reasoning_config = {
+            k: v for k, v in model_reasoning.items() if k != "exclude"
+        }
+    elif reasoning_effort != "none":
+        reasoning_config = {"effort": reasoning_effort}
+
+    effective_mode = benchmark_mode or ""
+
+    # --- Output path ---
     if output_path is None:
         slug = _model_slug(model)
-        effort_tag = f"_reasoning-{reasoning_effort}" if reasoning_effort != "none" else ""
-        output_path = Path(f"results/{slug}{effort_tag}.csv")
+        if benchmark_mode:
+            mode_tag = f"_{benchmark_mode}"
+        elif reasoning_effort != "none":
+            mode_tag = f"_reasoning-{reasoning_effort}"
+        else:
+            mode_tag = ""
+        output_path = Path(f"results/{slug}{mode_tag}.csv")
 
     dataset_raw = _load_csv(dataset_path)
     dataset = [
@@ -236,13 +289,14 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
     total = len(dataset)
 
     click.echo(
-        f"Model:       {model}\n"
-        f"Reasoning:   {reasoning_effort}\n"
-        f"Dataset:     {dataset_path} ({total} species"
+        f"Model:          {model}\n"
+        f"Benchmark mode: {benchmark_mode or 'N/A'}\n"
+        f"Reasoning cfg:  {reasoning_config}\n"
+        f"Dataset:        {dataset_path} ({total} species"
         f"{f', {skipped} skipped without eBird/AviList match' if skipped else ''})\n"
-        f"Output:      {output_path}\n"
-        f"Temperature: {temperature}\n"
-        f"Max tokens:  {max_tokens}",
+        f"Output:         {output_path}\n"
+        f"Temperature:    {temperature}\n"
+        f"Max tokens:     {max_tokens}",
         err=True,
     )
 
@@ -289,7 +343,8 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
     # --- Determine fieldnames from a dry score of the first row ---
     dummy_result = {**dataset[0], "model": model, "model_response": "",
                     "finish_reason": "", "truncated": False,
-                    "reasoning_effort": "", "latency_ms": 0,
+                    "reasoning_config": "", "benchmark_mode": "",
+                    "latency_ms": 0,
                     "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
                     "error": ""}
     fieldnames = list(score_row(dummy_result, name_index).keys())
@@ -314,7 +369,8 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
             scored = process_row(
                 row, model, resolved_token,
                 temperature=temperature, max_tokens=max_tokens,
-                reasoning_effort=reasoning_effort,
+                reasoning_config=reasoning_config,
+                benchmark_mode=effective_mode,
                 index=idx + 1, total=total,
                 score_fn=_score,
             )
@@ -328,7 +384,8 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
             scored = process_row(
                 row, model, resolved_token,
                 temperature=temperature, max_tokens=max_tokens,
-                reasoning_effort=reasoning_effort,
+                reasoning_config=reasoning_config,
+                benchmark_mode=effective_mode,
                 index=i + 1, total=total,
                 score_fn=_score,
             )
