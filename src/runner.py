@@ -133,10 +133,13 @@ def process_row(
     reasoning_effort: str = "none",
     index: int = 0,
     total: int = 0,
+    score_fn: object = None,
 ) -> dict[str, object]:
     """Call the LLM for one dataset row, with error handling and progress output.
 
     Returns the original row merged with model/response/latency/token fields.
+    If *score_fn* is provided it is called on the merged row and the scored
+    result is returned instead (and a hit/miss indicator is printed).
     """
     pt_name = row["portuguese_name"]
     label = f"[{index}/{total}] " if total else ""
@@ -180,14 +183,29 @@ def process_row(
             "error": str(exc),
         }
 
+    merged = {**row, "model": model, **llm}
+
     tag = ""
     if llm.get("truncated"):
         tag = " [TRUNCATED]"
     elif llm.get("finish_reason") == "error":
         tag = f" [ERROR: {llm.get('error', 'unknown')}]"
+
+    if score_fn is not None:
+        scored = score_fn(merged)
+        if not tag:
+            if scored.get("acceptable_match") in (True, "True"):
+                tag = " ✓"
+            else:
+                tag = " ✗"
+        print(
+            f"{llm.get('model_response', '')}{tag}  ({llm.get('latency_ms', 0)}ms)",
+            file=sys.stderr,
+        )
+        return scored
+
     print(
         f"{llm.get('model_response', '')}{tag}  ({llm.get('latency_ms', 0)}ms)",
         file=sys.stderr,
     )
-
-    return {**row, "model": model, **llm}
+    return merged

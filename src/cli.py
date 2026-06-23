@@ -263,6 +263,9 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
     resolved_token = get_openrouter_token(token)
     name_index = build_name_index(dataset)
 
+    def _score(row: dict) -> dict:
+        return score_row(row, name_index)
+
     # --- Resume logic ---
     kept: list[dict[str, str]] = []
     retry_indices: set[int] = set()
@@ -308,13 +311,13 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
         # Retry error rows
         for idx in sorted(retry_indices):
             row = dataset[idx]
-            result = process_row(
+            scored = process_row(
                 row, model, resolved_token,
                 temperature=temperature, max_tokens=max_tokens,
                 reasoning_effort=reasoning_effort,
                 index=idx + 1, total=total,
+                score_fn=_score,
             )
-            scored = score_row(result, name_index)
             writer.writerow(scored)
             fh.flush()
             all_scored.append(scored)
@@ -322,13 +325,13 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
         # Process remaining new rows
         for i in range(start_from, total):
             row = dataset[i]
-            result = process_row(
+            scored = process_row(
                 row, model, resolved_token,
                 temperature=temperature, max_tokens=max_tokens,
                 reasoning_effort=reasoning_effort,
                 index=i + 1, total=total,
+                score_fn=_score,
             )
-            scored = score_row(result, name_index)
             writer.writerow(scored)
             fh.flush()
             all_scored.append(scored)
