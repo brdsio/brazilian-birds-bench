@@ -195,8 +195,9 @@ def build(cbro_path: Path, avilist_path: Path, output_path: Path,
     help="OpenRouter API key. Defaults to the OPENROUTER_API_KEY env var.",
 )
 @click.option(
-    "--max-tokens", type=int, default=1024, show_default=True,
-    help="Maximum tokens in the LLM response.",
+    "--max-tokens", type=int, default=None,
+    help="Maximum tokens in the LLM response. Defaults to prompt.max_tokens "
+         "from the config file (falls back to 1024).",
 )
 @click.option(
     "--temperature", type=float, default=0.0, show_default=True,
@@ -229,12 +230,22 @@ def build(cbro_path: Path, avilist_path: Path, output_path: Path,
     help="Estimate token count and cost without making API calls.",
 )
 def run(model: str, dataset_path: Path, output_path: Path | None,
-        token: str | None, max_tokens: int, temperature: float,
+        token: str | None, max_tokens: int | None, temperature: float,
         reasoning_effort: str, benchmark_mode: str | None,
         config_path: Path, resume: bool, dry_run: bool) -> None:
     """Run the benchmark against an LLM via OpenRouter."""
     from .runner import ESTIMATED_PROMPT_TOKENS, get_openrouter_token, process_row
     from .scoring import build_name_index, score_row
+
+    # --- Load benchmark config once (used for max_tokens and reasoning) ---
+    bench_config: dict[str, object] = {}
+    if Path(config_path).exists():
+        with open(config_path, encoding="utf-8") as f:
+            bench_config = json.load(f)
+
+    # --- Resolve max_tokens: explicit flag wins, else config, else 1024 ---
+    if max_tokens is None:
+        max_tokens = bench_config.get("prompt", {}).get("max_tokens", 1024)
 
     # --- Resolve reasoning configuration ---
     if benchmark_mode is not None and reasoning_effort != "none":
@@ -252,8 +263,6 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
         # the field for those.
         reasoning_config = {"effort": "none"}
     elif benchmark_mode == "reasoning":
-        with open(config_path, encoding="utf-8") as f:
-            bench_config = json.load(f)
         model_reasoning = bench_config.get("reasoning_by_model", {}).get(model)
         if model_reasoning is None:
             available = list(bench_config.get("reasoning_by_model", {}).keys())
