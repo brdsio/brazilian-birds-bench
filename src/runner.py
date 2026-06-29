@@ -120,10 +120,16 @@ def call_llm(
     finish = choice.get("finish_reason", "")
     usage = data.get("usage") or {}
 
+    # ``content`` is ``None`` when the model spent its entire token budget on
+    # reasoning and never emitted an answer (``finish_reason == "length"``).
+    # Coerce to "" so we report it as truncated instead of crashing on
+    # ``None.strip()``.  Lower the reasoning effort to avoid this.
+    content = choice["message"].get("content") or ""
+
     return {
-        "model_response": choice["message"]["content"].strip(),
+        "model_response": content.strip(),
         "finish_reason": finish,
-        "truncated": finish == "length",
+        "truncated": finish == "length" or content.strip() == "",
         "reasoning_config": json.dumps(reasoning_config) if reasoning_config else "",
         "benchmark_mode": benchmark_mode,
         "latency_ms": latency_ms,

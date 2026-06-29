@@ -26,7 +26,7 @@
   ],
   "reasoning_by_model": {
     "google/gemini-3.1-flash-lite": {
-      "effort": "medium",
+      "effort": "low",
       "exclude": true
     },
     "anthropic/claude-opus-4.8": {
@@ -40,47 +40,45 @@
       "exclude": true
     },
     "openai/gpt-5.5": {
-      "effort": "medium",
+      "effort": "minimal",
       "exclude": true
     },
     "openai/gpt-5.4-mini": {
-      "effort": "medium",
+      "effort": "minimal",
       "exclude": true
     },
     "deepseek/deepseek-v4-pro": {
-      "effort": "high",
+      "effort": "minimal",
       "exclude": true
     },
     "moonshotai/kimi-k2.6": {
-      "enabled": true,
+      "effort": "minimal",
       "exclude": true
     },
     "mistralai/mistral-small-2603": {
-      "effort": "high",
+      "effort": "minimal",
       "exclude": true
     },
     "qwen/qwen3.7-plus": {
-      "enabled": true,
+      "effort": "minimal",
       "exclude": true
     }
   },
   "reasoning_groups": {
-    "effort_medium": [
-      "google/gemini-3.1-flash-lite",
+    "effort_low": [
+      "google/gemini-3.1-flash-lite"
+    ],
+    "effort_minimal": [
       "openai/gpt-5.5",
-      "openai/gpt-5.4-mini"
-    ],
-    "fixed_budget_256": [
-      "anthropic/claude-opus-4.8",
-      "anthropic/claude-sonnet-4.6"
-    ],
-    "nearest_available_high": [
+      "openai/gpt-5.4-mini",
       "deepseek/deepseek-v4-pro",
-      "mistralai/mistral-small-2603"
-    ],
-    "native_reasoning": [
+      "mistralai/mistral-small-2603",
       "moonshotai/kimi-k2.6",
       "qwen/qwen3.7-plus"
+    ],
+    "fixed_budget_min_1024": [
+      "anthropic/claude-opus-4.8",
+      "anthropic/claude-sonnet-4.6"
     ]
   }
 }
