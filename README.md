@@ -1,7 +1,5 @@
 # brazilian-birds-bench
 
-<img width="400" height="400" alt="Rufous-bellied Thrush" src="https://github.com/user-attachments/assets/3c1bf60f-0f3a-40c2-8c82-d4249c58a87c" />
-
 A benchmark of large language model knowledge on Brazilian bird names.
 
 The task is deliberately narrow: given the Brazilian Portuguese common name of a
@@ -189,6 +187,63 @@ bbb audit --input results/<file>.csv --sample 50
 `audit/<input-stem>_audit.csv` with an empty `human_label` column for manual
 review. After labelling and adjusting the classifiers, re-run `bbb score` to
 re-apply scoring.
+
+## Results
+
+Benchmarks run June 2026 via OpenRouter — zero-shot, `temperature 0`, single run
+per species, **1,836 scored species** (those with both an eBird and AviList
+match). `no_reasoning` snapshot: 2026-06-24 · `reasoning` snapshot: 2026-06-29
+(see the `benchmarks-*` git tags). `accept` = the answer matches the English name
+of any of the three authorities (CBRO/eBird/AviList). `qwen3.7-plus` reasoning is
+a **partial run (655/1,836 rows)** — its percentages are not directly comparable.
+
+### Accuracy (acceptable match)
+
+| Model | no_reasoning | reasoning |
+|-------|-------------:|----------:|
+| openai/gpt-5.5               | 33.44% | **73.04%** |
+| anthropic/claude-opus-4.8    | 32.19% | 48.64% |
+| google/gemini-3.1-flash-lite | 32.41% | 45.04% |
+| deepseek/deepseek-v4-pro     | 30.88% | 42.32% |
+| anthropic/claude-sonnet-4.6  | 24.56% | 38.29% |
+| openai/gpt-5.4-mini          | 18.79% | 29.30% |
+| moonshotai/kimi-k2.6         | 18.95% | 26.09% |
+| qwen/qwen3.7-plus            | 20.37% | 29.01%* |
+| mistralai/mistral-small-2603 | 16.34% | 18.85% |
+
+<sub>* partial run (655 rows)</sub>
+
+### Error types — no_reasoning
+
+| Model | correct | intra_genus | intra_family | intra_order | hallucinated | refusal |
+|-------|--------:|------------:|-------------:|------------:|-------------:|--------:|
+| openai/gpt-5.5               | 614 | 143 | 350 | 255 | 474 | 0 |
+| anthropic/claude-opus-4.8    | 591 | 172 | 389 | 231 | 453 | 0 |
+| google/gemini-3.1-flash-lite | 595 | 154 | 401 | 222 | 464 | 0 |
+| deepseek/deepseek-v4-pro     | 567 | 121 | 336 | 252 | 557 | 3 |
+| anthropic/claude-sonnet-4.6  | 451 | 139 | 342 | 234 | 670 | 0 |
+| openai/gpt-5.4-mini          | 345 |  63 | 235 | 248 | 945 | 0 |
+| moonshotai/kimi-k2.6         | 348 | 107 | 271 | 341 | 769 | 0 |
+| qwen/qwen3.7-plus            | 374 |  82 | 221 | 170 | 989 | 0 |
+| mistralai/mistral-small-2603 | 300 |  53 | 297 | 265 | 921 | 0 |
+
+### Error types — reasoning
+
+| Model | correct | intra_genus | intra_family | intra_order | hallucinated | refusal |
+|-------|--------:|------------:|-------------:|------------:|-------------:|--------:|
+| openai/gpt-5.5               | 1341 |  91 | 117 |  71 | 214 |   2 |
+| anthropic/claude-opus-4.8    |  893 | 182 | 316 | 136 | 302 |   7 |
+| google/gemini-3.1-flash-lite |  827 | 182 | 317 | 137 | 373 |   0 |
+| deepseek/deepseek-v4-pro     |  777 | 115 | 289 | 211 | 365 |  79 |
+| anthropic/claude-sonnet-4.6  |  703 | 138 | 338 | 205 | 449 |   3 |
+| openai/gpt-5.4-mini          |  538 | 104 | 200 | 153 | 841 |   0 |
+| moonshotai/kimi-k2.6         |  479 |  69 | 190 | 191 | 315 | 592 |
+| qwen/qwen3.7-plus *(partial)* | 190 |  37 | 101 |  10 | 315 |   2 |
+| mistralai/mistral-small-2603 |  346 |  86 | 269 | 192 | 900 |  43 |
+
+<sub>`correct` = acceptable match. Counts are per scored species; rows sum to
+1,836 (655 for the partial qwen run). Reasoning lifts accuracy for every model
+but inflates `refusal` for some (kimi-k2.6: 592, deepseek-v4-pro: 79).</sub>
 
 ## Development
 
