@@ -276,7 +276,14 @@ pytest
 ruff check .
 ```
 
+## Methodology and citation
+
+The frozen v1.0 experimental protocol, statistical procedure, limitations, and
+reproducibility notes are documented in [METHODS.md](METHODS.md). Citation
+metadata is provided in [CITATION.cff](CITATION.cff).
+
 ## License
 
-MIT for the code. The CBRO checklist, eBird taxonomy, and AviList checklist
-retain their own terms; see their respective sources before redistribution.
+The code is distributed under the [MIT License](LICENSE). The CBRO checklist,
+eBird taxonomy, and AviList checklist retain their own terms; see their
+respective sources before redistribution.
