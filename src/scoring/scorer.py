@@ -45,10 +45,22 @@ def score_row(
 
     acceptable = len(sources) > 0
 
+    finish_reason = str(row.get("finish_reason", ""))
+    is_truncated = row.get("truncated") in (True, "True") or finish_reason == "length"
+    if finish_reason == "error":
+        generation_status = "api_error"
+    elif is_truncated:
+        generation_status = "truncated"
+    elif not response:
+        generation_status = "empty_response"
+    else:
+        generation_status = "complete"
+
     dist = 0 if acceptable else taxonomic_distance(row, response, name_index)
     error = classify_error(
         row, response, name_index, acceptable,
-        str(row.get("finish_reason", "")),
+        finish_reason,
+        is_truncated,
     )
 
     return {
@@ -58,6 +70,7 @@ def score_row(
         "exact_match": exact,
         "acceptable_match": acceptable,
         "match_source": ";".join(sources),
+        "generation_status": generation_status,
         "taxonomic_distance": dist,
         "error_type": error,
     }

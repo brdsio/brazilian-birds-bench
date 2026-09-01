@@ -16,25 +16,34 @@ Subcommands:
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import platform
 import random
+import subprocess
 import sys
+from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
 
 import click
 
-from .parsing.cbro import OUTPUT_FIELDS, parse_cbro
+from .enrichment.avilist import (
+    AVILIST_FIELDS,
+    load_avilist_index,
+)
+from .enrichment.avilist import (
+    enrich_rows as enrich_rows_avilist,
+)
 from .enrichment.ebird import (
     EBIRD_FIELDS,
-    enrich_rows as enrich_rows_ebird,
     fetch_ebird_taxonomy,
     get_token,
 )
-from .enrichment.avilist import (
-    AVILIST_FIELDS,
-    enrich_rows as enrich_rows_avilist,
-    load_avilist_index,
+from .enrichment.ebird import (
+    enrich_rows as enrich_rows_ebird,
 )
+from .parsing.cbro import OUTPUT_FIELDS, parse_cbro
 
 ZENODO_URL = (
     "https://zenodo.org/record/5138368/files/"
@@ -62,6 +71,7 @@ def _model_slug(model: str) -> str:
 
 
 def _load_csv(path: Path) -> list[dict[str, str]]:
+    csv.field_size_limit(sys.maxsize)
     with open(path, encoding="utf-8-sig", newline="") as fh:
         return list(csv.DictReader(fh))
 
@@ -69,9 +79,85 @@ def _load_csv(path: Path) -> list[dict[str, str]]:
 def _write_csv(rows: list[dict], fieldnames: list[str], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", newline="", encoding="utf-8-sig") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_commit() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _run_metadata(dataset_path: Path, config_path: Path) -> dict[str, str]:
+    from .runner import SYSTEM_PROMPT, USER_TEMPLATE
+
+    prompt = json.dumps(
+        {"system": SYSTEM_PROMPT, "user_template": USER_TEMPLATE},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return {
+        "run_started_at_utc": datetime.now(UTC).isoformat(),
+        "dataset_sha256": _sha256(dataset_path),
+        "config_sha256": _sha256(config_path) if config_path.exists() else "",
+        "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+        "git_commit": _git_commit(),
+        "python_version": platform.python_version(),
+        "requests_version": version("requests"),
+    }
+
+
+def _write_manifest(
+    output_path: Path, metadata: dict[str, str], **settings: object,
+) -> None:
+    manifest = {**metadata, **settings}
+    path = output_path.with_suffix(".manifest.json")
+    path.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _index_resume_rows(
+    rows: list[dict[str, str]],
+    model: str,
+    benchmark_mode: str,
+    reasoning_config: dict[str, object] | None,
+) -> dict[str, dict[str, str]]:
+    """Validate and index prior output by stable species identity."""
+    indexed: dict[str, dict[str, str]] = {}
+    expected_reasoning = json.dumps(reasoning_config) if reasoning_config else ""
+    for row in rows:
+        row_id = row.get("cbro_id", "")
+        if not row_id:
+            raise click.ClickException("Resume file contains a row without cbro_id.")
+        if row_id in indexed:
+            raise click.ClickException(f"Duplicate cbro_id in resume file: {row_id}")
+        if row.get("model") and row["model"] != model:
+            raise click.ClickException(
+                f"Resume model mismatch: {row['model']!r} != {model!r}"
+            )
+        if row.get("benchmark_mode", "") != benchmark_mode:
+            raise click.ClickException(
+                "Resume benchmark mode differs from the requested mode."
+            )
+        if row.get("reasoning_config", "") != expected_reasoning:
+            raise click.ClickException(
+                "Resume reasoning configuration differs from the requested config."
+            )
+        indexed[row_id] = row
+    return indexed
 
 
 def _download(url: str, dest: Path) -> None:
@@ -158,7 +244,9 @@ def build(cbro_path: Path, avilist_path: Path, output_path: Path,
 
     total = len(records)
     eb_fallback = sum(1 for r in records if r["ebird_match_method"] == "epithet_family")
-    av_fallback = sum(1 for r in records if r["avilist_match_method"] == "epithet_family")
+    av_fallback = sum(
+        1 for r in records if r["avilist_match_method"] == "epithet_family"
+    )
     eb_disputed = sum(1 for r in records if r["name_disputed"])
     av_disputed = sum(1 for r in records if r["name_disputed_avilist"])
     click.echo(
@@ -222,6 +310,14 @@ def build(cbro_path: Path, avilist_path: Path, output_path: Path,
     help="Path to benchmark configuration file.",
 )
 @click.option(
+    "--provider", default=None,
+    help="Pin an OpenRouter provider slug for reproducible routing.",
+)
+@click.option(
+    "--allow-provider-fallback/--no-provider-fallback", default=False,
+    help="Allow OpenRouter to fail over when --provider is set.",
+)
+@click.option(
     "--resume", is_flag=True, default=False,
     help="Resume an interrupted run: skip completed rows, retry errors.",
 )
@@ -232,7 +328,8 @@ def build(cbro_path: Path, avilist_path: Path, output_path: Path,
 def run(model: str, dataset_path: Path, output_path: Path | None,
         token: str | None, max_tokens: int | None, temperature: float,
         reasoning_effort: str, benchmark_mode: str | None,
-        config_path: Path, resume: bool, dry_run: bool) -> None:
+        config_path: Path, provider: str | None, allow_provider_fallback: bool,
+        resume: bool, dry_run: bool) -> None:
     """Run the benchmark against an LLM via OpenRouter."""
     from .runner import ESTIMATED_PROMPT_TOKENS, get_openrouter_token, process_row
     from .scoring import build_name_index, score_row
@@ -256,11 +353,8 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
     reasoning_config: dict[str, object] | None = None
 
     if benchmark_mode == "no_reasoning":
-        # Explicitly turn reasoning OFF.  Omitting the ``reasoning`` field is
-        # NOT enough: OpenRouter leaves reasoning at the model's default, which
-        # is ON for GPT-5.x / o-series.  ``effort: none`` disables it.  Models
-        # with mandatory reasoning reject this; call_llm falls back to omitting
-        # the field for those.
+        # Explicitly request reasoning OFF. If a model rejects this setting the
+        # request is recorded as an API error; the protocol is never changed.
         reasoning_config = {"effort": "none"}
     elif benchmark_mode == "reasoning":
         model_reasoning = bench_config.get("reasoning_by_model", {}).get(model)
@@ -277,6 +371,12 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
         reasoning_config = {"effort": reasoning_effort}
 
     effective_mode = benchmark_mode or ""
+    provider_config = None
+    if provider:
+        provider_config = {
+            "order": [provider],
+            "allow_fallbacks": allow_provider_fallback,
+        }
 
     # --- Output path ---
     if output_path is None:
@@ -301,6 +401,7 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
         f"Model:          {model}\n"
         f"Benchmark mode: {benchmark_mode or 'N/A'}\n"
         f"Reasoning cfg:  {reasoning_config}\n"
+        f"Provider cfg:   {provider_config}\n"
         f"Dataset:        {dataset_path} ({total} species"
         f"{f', {skipped} skipped without eBird/AviList match' if skipped else ''})\n"
         f"Output:         {output_path}\n"
@@ -325,34 +426,65 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
 
     resolved_token = get_openrouter_token(token)
     name_index = build_name_index(dataset)
+    run_meta = _run_metadata(dataset_path, config_path)
+    run_meta["requested_provider"] = provider or ""
+    run_meta["provider_fallback_allowed"] = str(
+        bool(provider and allow_provider_fallback)
+    )
+    run_settings = {
+        "requested_model": model,
+        "benchmark_mode": effective_mode,
+        "reasoning_config": reasoning_config,
+        "provider_config": provider_config,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "dataset": str(dataset_path),
+    }
 
     def _score(row: dict) -> dict:
         return score_row(row, name_index)
 
     # --- Resume logic ---
-    kept: list[dict[str, str]] = []
-    retry_indices: set[int] = set()
-    start_from = 0
+    existing_by_id: dict[str, dict[str, str]] = {}
 
     if resume and output_path.exists():
-        existing = _load_csv(output_path)
-        for i, row in enumerate(existing):
-            if row.get("finish_reason") == "error":
-                retry_indices.add(i)
-            else:
-                kept.append(row)
-        start_from = len(existing)
-        n_retry = len(retry_indices)
+        manifest_path = output_path.with_suffix(".manifest.json")
+        if manifest_path.exists():
+            previous_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for key in (
+                "dataset_sha256", "config_sha256", "prompt_sha256", "git_commit"
+            ):
+                if previous_manifest.get(key) != run_meta.get(key):
+                    raise click.ClickException(
+                        f"Resume metadata mismatch for {key}: refusing mixed run."
+                    )
+            for key, expected in run_settings.items():
+                if previous_manifest.get(key) != expected:
+                    raise click.ClickException(
+                        f"Resume setting mismatch for {key}: refusing mixed run."
+                    )
+        existing_by_id = _index_resume_rows(
+            _load_csv(output_path), model, effective_mode, reasoning_config,
+        )
+        n_retry = sum(
+            row.get("finish_reason") == "error" for row in existing_by_id.values()
+        )
+        n_complete = len(existing_by_id) - n_retry
         click.echo(
-            f"Resuming: {len(kept)} completed, {n_retry} to retry, "
-            f"{max(0, total - start_from)} new rows.",
+            f"Resuming: {n_complete} completed, {n_retry} to retry, "
+            f"{total - len(existing_by_id)} new rows.",
             err=True,
         )
 
+    _write_manifest(output_path, run_meta, **run_settings)
+
     # --- Determine fieldnames from a dry score of the first row ---
-    dummy_result = {**dataset[0], "model": model, "model_response": "",
+    dummy_result = {**dataset[0], "model": model, **run_meta, "model_response": "",
                     "finish_reason": "", "truncated": False,
-                    "reasoning_config": "", "benchmark_mode": "",
+                    "reasoning_config": "", "effective_reasoning_config": "",
+                    "benchmark_mode": "", "resolved_model": "",
+                    "generation_id": "", "request_id": "", "provider": "",
+                    "response_created": "", "requested_at_utc": "",
                     "latency_ms": 0,
                     "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
                     "error": ""}
@@ -363,41 +495,25 @@ def run(model: str, dataset_path: Path, output_path: Path | None,
     all_scored: list[dict] = []
 
     with open(output_path, "w", newline="", encoding="utf-8-sig") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
 
-        # Write kept rows first (resume: non-error rows)
-        for row in kept:
-            scored = score_row(row, name_index)
-            writer.writerow(scored)
-            all_scored.append(scored)
-
-        # Retry error rows
-        for idx in sorted(retry_indices):
-            row = dataset[idx]
-            scored = process_row(
-                row, model, resolved_token,
-                temperature=temperature, max_tokens=max_tokens,
-                reasoning_config=reasoning_config,
-                benchmark_mode=effective_mode,
-                index=idx + 1, total=total,
-                score_fn=_score,
-            )
-            writer.writerow(scored)
-            fh.flush()
-            all_scored.append(scored)
-
-        # Process remaining new rows
-        for i in range(start_from, total):
-            row = dataset[i]
-            scored = process_row(
-                row, model, resolved_token,
-                temperature=temperature, max_tokens=max_tokens,
-                reasoning_config=reasoning_config,
-                benchmark_mode=effective_mode,
-                index=i + 1, total=total,
-                score_fn=_score,
-            )
+        # Always emit dataset order. Identity is cbro_id, never CSV position.
+        for i, row in enumerate(dataset):
+            previous = existing_by_id.get(row["cbro_id"])
+            if previous is not None and previous.get("finish_reason") != "error":
+                scored = score_row(previous, name_index)
+            else:
+                scored = process_row(
+                    row, model, resolved_token,
+                    temperature=temperature, max_tokens=max_tokens,
+                    reasoning_config=reasoning_config,
+                    provider_config=provider_config,
+                    benchmark_mode=effective_mode,
+                    index=i + 1, total=total,
+                    score_fn=_score,
+                    run_metadata=run_meta,
+                )
             writer.writerow(scored)
             fh.flush()
             all_scored.append(scored)
@@ -418,8 +534,15 @@ def _print_run_summary(scored: list[dict], output_path: Path) -> None:
 
     click.echo(f"\n{'='*55}", err=True)
     click.echo(f"Results: {total} species -> {output_path}", err=True)
-    click.echo(f"  Exact match:      {exact}/{total} ({100*exact/total:.1f}%)", err=True)
-    click.echo(f"  Acceptable match: {acceptable}/{total} ({100*acceptable/total:.1f}%)", err=True)
+    click.echo(
+        f"  Exact match:      {exact}/{total} ({100 * exact / total:.1f}%)",
+        err=True,
+    )
+    click.echo(
+        f"  Acceptable match: {acceptable}/{total} "
+        f"({100 * acceptable / total:.1f}%)",
+        err=True,
+    )
     if truncated:
         click.echo(
             f"  Truncated:        {truncated}/{total} ({100*truncated/total:.1f}%) "
@@ -427,7 +550,10 @@ def _print_run_summary(scored: list[dict], output_path: Path) -> None:
             err=True,
         )
     if errors:
-        click.echo(f"  Errors:           {errors}/{total} ({100*errors/total:.1f}%)", err=True)
+        click.echo(
+            f"  Errors:           {errors}/{total} ({100 * errors / total:.1f}%)",
+            err=True,
+        )
 
     # Token / latency stats
     latencies = [
@@ -494,7 +620,12 @@ def _print_run_summary(scored: list[dict], output_path: Path) -> None:
     default=None,
     help="Output CSV. Defaults to overwriting the input file.",
 )
-def score(input_path: Path, output_path: Path | None) -> None:
+@click.option(
+    "--dataset", "dataset_path", type=click.Path(exists=True, path_type=Path),
+    default=DEFAULT_DATASET, show_default=True,
+    help="Complete reference dataset used to build the taxonomy index.",
+)
+def score(input_path: Path, output_path: Path | None, dataset_path: Path) -> None:
     """Re-apply scoring to an existing results CSV (no LLM calls)."""
     from .scoring import build_name_index, score_row
 
@@ -502,7 +633,12 @@ def score(input_path: Path, output_path: Path | None) -> None:
         output_path = input_path
 
     rows = _load_csv(input_path)
-    name_index = build_name_index(rows)
+    dataset = [
+        row for row in _load_csv(dataset_path)
+        if row.get("ebird_matched") != "False"
+        and row.get("avilist_matched") != "False"
+    ]
+    name_index = build_name_index(dataset)
     scored = [score_row(row, name_index) for row in rows]
 
     fieldnames = list(scored[0].keys()) if scored else []
@@ -510,6 +646,75 @@ def score(input_path: Path, output_path: Path | None) -> None:
 
     click.echo(f"Re-scored {len(scored)} rows -> {output_path}", err=True)
     _print_run_summary(scored, output_path)
+
+
+# ---------------------------------------------------------------------------
+# bbb stats
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option(
+    "--input", "input_paths", multiple=True, required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Result CSV; repeat to compare multiple runs.",
+)
+@click.option(
+    "--metric", type=click.Choice(["exact_match", "acceptable_match"]),
+    default="acceptable_match", show_default=True,
+)
+@click.option("--bootstrap-samples", type=int, default=10_000, show_default=True)
+@click.option("--seed", type=int, default=42, show_default=True)
+@click.option(
+    "--output", "output_path", type=click.Path(path_type=Path), default=None,
+    help="Optional CSV output for estimates and pairwise McNemar tests.",
+)
+def stats(input_paths: tuple[Path, ...], metric: str, bootstrap_samples: int,
+          seed: int, output_path: Path | None) -> None:
+    """Report bootstrap confidence intervals and paired McNemar comparisons."""
+    from itertools import combinations
+
+    from .statistics import bootstrap_accuracy_ci, mcnemar_exact
+
+    loaded = {path: _load_csv(path) for path in input_paths}
+    for path, rows in loaded.items():
+        if not rows or "cbro_id" not in rows[0] or metric not in rows[0]:
+            raise click.ClickException(
+                f"{path} is not a benchmark result CSV with {metric!r}."
+            )
+    output_rows: list[dict[str, object]] = []
+    for path, rows in loaded.items():
+        estimate, lo, hi = bootstrap_accuracy_ci(
+            rows, metric, samples=bootstrap_samples, seed=seed,
+        )
+        click.echo(
+            f"{path}: {estimate:.2%} (95% bootstrap CI {lo:.2%}–{hi:.2%}; "
+            f"n={len(rows)})"
+        )
+        output_rows.append({
+            "analysis": "bootstrap_ci", "left": str(path), "right": "",
+            "metric": metric, "n": len(rows), "estimate": estimate,
+            "ci_low": lo, "ci_high": hi, "left_only_correct": "",
+            "right_only_correct": "", "p_value": "",
+        })
+
+    for (left_path, left), (right_path, right) in combinations(loaded.items(), 2):
+        result = mcnemar_exact(left, right, metric)
+        click.echo(
+            f"{left_path} vs {right_path}: McNemar exact p="
+            f"{result['p_value']:.6g}, discordant={result['discordant']}, "
+            f"n={result['n_paired']}"
+        )
+        output_rows.append({
+            "analysis": "mcnemar_exact", "left": str(left_path),
+            "right": str(right_path), "metric": metric,
+            "n": result["n_paired"], "estimate": "", "ci_low": "",
+            "ci_high": "", "left_only_correct": result["left_only_correct"],
+            "right_only_correct": result["right_only_correct"],
+            "p_value": result["p_value"],
+        })
+
+    if output_path:
+        _write_csv(output_rows, list(output_rows[0]), output_path)
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +758,9 @@ def audit(input_path: Path, sample_size: int,
 
     audit_rows = []
     for r in sampled:
-        audit_row = {col: r.get(col, "") for col in AUDIT_COLUMNS if col != "human_label"}
+        audit_row = {
+            col: r.get(col, "") for col in AUDIT_COLUMNS if col != "human_label"
+        }
         audit_row["human_label"] = ""
         audit_rows.append(audit_row)
 
@@ -572,8 +779,8 @@ def audit(input_path: Path, sample_size: int,
     for et, count in sorted(type_counts.items()):
         click.echo(f"  {et}: {count}", err=True)
     click.echo(
-        f"\nFill the 'human_label' column, then use 'bbb score' to re-apply "
-        f"scoring after adjusting classifiers.",
+        "\nFill the 'human_label' column, then use 'bbb score' to re-apply "
+        "scoring after adjusting classifiers.",
         err=True,
     )
 

@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import time
+from datetime import UTC, datetime
 
 import requests
 
@@ -59,6 +60,7 @@ def call_llm(
     temperature: float = 0.0,
     max_tokens: int = 1024,
     reasoning_config: dict[str, object] | None = None,
+    provider_config: dict[str, object] | None = None,
     benchmark_mode: str = "",
 ) -> dict[str, object]:
     """Call OpenRouter for a single bird name.
@@ -85,24 +87,13 @@ def call_llm(
     }
     if reasoning_config is not None:
         payload["reasoning"] = reasoning_config
+    if provider_config is not None:
+        payload["provider"] = provider_config
 
     t0 = time.monotonic()
     resp = requests.post(
         OPENROUTER_URL, headers=headers, json=payload, timeout=120,
     )
-
-    # Some models have mandatory reasoning and reject ``effort: none`` with a
-    # 4xx.  In that case fall back to omitting the reasoning field entirely so
-    # the run still produces a result (the model just reasons at its default).
-    if (
-        resp.status_code != 200
-        and reasoning_config == {"effort": "none"}
-        and 400 <= resp.status_code < 500
-    ):
-        payload.pop("reasoning", None)
-        resp = requests.post(
-            OPENROUTER_URL, headers=headers, json=payload, timeout=120,
-        )
 
     latency_ms = round((time.monotonic() - t0) * 1000)
 
@@ -129,9 +120,19 @@ def call_llm(
     return {
         "model_response": content.strip(),
         "finish_reason": finish,
-        "truncated": finish == "length" or content.strip() == "",
+        "truncated": finish == "length",
         "reasoning_config": json.dumps(reasoning_config) if reasoning_config else "",
+        "effective_reasoning_config": (
+            "accepted_not_echoed_by_api:"
+            + (json.dumps(reasoning_config) if reasoning_config else "omitted")
+        ),
         "benchmark_mode": benchmark_mode,
+        "resolved_model": data.get("model", ""),
+        "generation_id": data.get("id", ""),
+        "request_id": resp.headers.get("x-request-id", ""),
+        "provider": data.get("provider", ""),
+        "response_created": data.get("created", ""),
+        "requested_at_utc": datetime.now(UTC).isoformat(),
         "latency_ms": latency_ms,
         "prompt_tokens": usage.get("prompt_tokens", 0),
         "completion_tokens": usage.get("completion_tokens", 0),
@@ -147,10 +148,12 @@ def process_row(
     temperature: float = 0.0,
     max_tokens: int = 1024,
     reasoning_config: dict[str, object] | None = None,
+    provider_config: dict[str, object] | None = None,
     benchmark_mode: str = "",
     index: int = 0,
     total: int = 0,
     score_fn: object = None,
+    run_metadata: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Call the LLM for one dataset row, with error handling and progress output.
 
@@ -163,12 +166,14 @@ def process_row(
     print(f"{label}{pt_name} ...", end=" ", file=sys.stderr, flush=True)
 
     rc_serialized = json.dumps(reasoning_config) if reasoning_config else ""
+    run_metadata = run_metadata or {}
 
     try:
         llm = call_llm(
             pt_name, model, token,
             temperature=temperature, max_tokens=max_tokens,
             reasoning_config=reasoning_config,
+            provider_config=provider_config,
             benchmark_mode=benchmark_mode,
         )
     except requests.HTTPError as exc:
@@ -184,7 +189,14 @@ def process_row(
             "finish_reason": "error",
             "truncated": False,
             "reasoning_config": rc_serialized,
+            "effective_reasoning_config": "unknown_request_failed",
             "benchmark_mode": benchmark_mode,
+            "resolved_model": "",
+            "generation_id": "",
+            "request_id": "",
+            "provider": "",
+            "response_created": "",
+            "requested_at_utc": datetime.now(UTC).isoformat(),
             "latency_ms": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -197,7 +209,14 @@ def process_row(
             "finish_reason": "error",
             "truncated": False,
             "reasoning_config": rc_serialized,
+            "effective_reasoning_config": "unknown_request_failed",
             "benchmark_mode": benchmark_mode,
+            "resolved_model": "",
+            "generation_id": "",
+            "request_id": "",
+            "provider": "",
+            "response_created": "",
+            "requested_at_utc": datetime.now(UTC).isoformat(),
             "latency_ms": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -205,7 +224,7 @@ def process_row(
             "error": str(exc),
         }
 
-    merged = {**row, "model": model, **llm}
+    merged = {**row, "model": model, **run_metadata, **llm}
 
     tag = ""
     if llm.get("truncated"):

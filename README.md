@@ -17,7 +17,8 @@ available through OpenRouter against it.
    name to English via OpenRouter, scoring every answer as it goes.
 3. **`bbb score`** re-applies the scoring logic to an existing results file
    without making any API calls.
-4. **`bbb audit`** samples wrong answers into a CSV for manual review.
+4. **`bbb stats`** reports confidence intervals and paired model comparisons.
+5. **`bbb audit`** samples wrong answers into a CSV for manual review.
 
 ## Data sources
 
@@ -124,15 +125,19 @@ the English common name only, and the user message contains nothing but the
 Portuguese name. Each row is called with `temperature 0` for determinism, scored
 immediately, and written incrementally so an interrupted run loses nothing.
 Species without an eBird *and* AviList match are skipped. By default results go
-to `results/<model-slug>_<mode>.csv`.
+to `results/<model-slug>_<mode>.csv`. New runs also write a JSON manifest with
+dataset/config/prompt hashes, Git commit, runtime versions, routing policy, and
+generation settings. Use `--provider` to pin an OpenRouter provider; fallback
+is disabled unless explicitly enabled.
 
 ### Reasoning modes
 
 `benchmark_config.json` defines two benchmark modes and per-model reasoning
 settings:
 
-- `--benchmark-mode no_reasoning` explicitly disables reasoning (`effort: none`;
-  models with mandatory reasoning fall back to the model default automatically).
+- `--benchmark-mode no_reasoning` requests `effort: none`. If a model rejects
+  it, the request is recorded as an API error; the protocol is never silently
+  changed.
 - `--benchmark-mode reasoning` applies each model's entry from
   `reasoning_by_model` in the config (effort level or fixed token budget).
 
@@ -175,9 +180,27 @@ Three layers of metrics are recorded per row:
    | 2        | `intra_family` | wrong species, same family           |
    | 3        | `intra_order`  | wrong species, same order            |
    | 4        | `hallucinated` | name not found among known species   |
-   | —        | `refusal`      | empty response or API error          |
+   | —        | `api_error`    | request failed                       |
+   | —        | `truncated`    | generation exhausted its token limit|
+   | —        | `empty_response` | completed without answer           |
 
-## 4. Auditing (`bbb audit`)
+Rescoring builds its taxonomy index from the complete reference dataset, so a
+partial run is classified consistently with a complete run.
+
+## 4. Statistical analysis (`bbb stats`)
+
+```bash
+bbb stats \
+  --input results/openai--gpt-5.5_no_reasoning.csv \
+  --input results/openai--gpt-5.5_reasoning.csv \
+  --output results/gpt-5.5_statistics.csv
+```
+
+This reports species-level percentile bootstrap 95% confidence intervals and,
+with multiple inputs, pairwise two-sided exact McNemar tests. Observations are
+paired by `cbro_id`; partial runs use their shared species and report that size.
+
+## 5. Auditing (`bbb audit`)
 
 ```bash
 bbb audit --input results/<file>.csv --sample 50
@@ -215,35 +238,35 @@ a **partial run (655/1,836 rows)** — its percentages are not directly comparab
 
 ### Error types — no_reasoning
 
-| Model | correct | intra_genus | intra_family | intra_order | hallucinated | refusal |
-|-------|--------:|------------:|-------------:|------------:|-------------:|--------:|
-| openai/gpt-5.5               | 614 | 143 | 350 | 255 | 474 | 0 |
-| anthropic/claude-opus-4.8    | 591 | 172 | 389 | 231 | 453 | 0 |
-| google/gemini-3.1-flash-lite | 595 | 154 | 401 | 222 | 464 | 0 |
-| deepseek/deepseek-v4-pro     | 567 | 121 | 336 | 252 | 557 | 3 |
-| anthropic/claude-sonnet-4.6  | 451 | 139 | 342 | 234 | 670 | 0 |
-| openai/gpt-5.4-mini          | 345 |  63 | 235 | 248 | 945 | 0 |
-| moonshotai/kimi-k2.6         | 348 | 107 | 271 | 341 | 769 | 0 |
-| qwen/qwen3.7-plus            | 374 |  82 | 221 | 170 | 989 | 0 |
-| mistralai/mistral-small-2603 | 300 |  53 | 297 | 265 | 921 | 0 |
+| Model | correct | intra_genus | intra_family | intra_order | hallucinated | API error | truncated |
+|-------|--------:|------------:|-------------:|------------:|-------------:|----------:|----------:|
+| openai/gpt-5.5               | 614 | 143 | 350 | 255 | 474 | 0 | 0 |
+| anthropic/claude-opus-4.8    | 591 | 172 | 389 | 231 | 453 | 0 | 0 |
+| google/gemini-3.1-flash-lite | 595 | 154 | 401 | 222 | 464 | 0 | 0 |
+| deepseek/deepseek-v4-pro     | 567 | 121 | 336 | 252 | 557 | 3 | 0 |
+| anthropic/claude-sonnet-4.6  | 451 | 139 | 342 | 234 | 670 | 0 | 0 |
+| openai/gpt-5.4-mini          | 345 |  63 | 235 | 248 | 945 | 0 | 0 |
+| moonshotai/kimi-k2.6         | 348 | 107 | 271 | 341 | 761 | 0 | 8 |
+| qwen/qwen3.7-plus            | 374 |  82 | 221 | 170 | 989 | 0 | 0 |
+| mistralai/mistral-small-2603 | 300 |  53 | 297 | 265 | 921 | 0 | 0 |
 
 ### Error types — reasoning
 
-| Model | correct | intra_genus | intra_family | intra_order | hallucinated | refusal |
-|-------|--------:|------------:|-------------:|------------:|-------------:|--------:|
-| openai/gpt-5.5               | 1341 |  91 | 117 |  71 | 214 |   2 |
-| anthropic/claude-opus-4.8    |  893 | 182 | 316 | 136 | 302 |   7 |
-| google/gemini-3.1-flash-lite |  827 | 182 | 317 | 137 | 373 |   0 |
-| deepseek/deepseek-v4-pro     |  777 | 115 | 289 | 211 | 365 |  79 |
-| anthropic/claude-sonnet-4.6  |  703 | 138 | 338 | 205 | 449 |   3 |
-| openai/gpt-5.4-mini          |  538 | 104 | 200 | 153 | 841 |   0 |
-| moonshotai/kimi-k2.6         |  479 |  69 | 190 | 191 | 315 | 592 |
-| qwen/qwen3.7-plus *(partial)* | 190 |  37 | 101 |  10 | 315 |   2 |
-| mistralai/mistral-small-2603 |  346 |  86 | 269 | 192 | 900 |  43 |
+| Model | correct | intra_genus | intra_family | intra_order | hallucinated | API error | truncated |
+|-------|--------:|------------:|-------------:|------------:|-------------:|----------:|----------:|
+| openai/gpt-5.5               | 1341 |  91 | 117 |  71 | 214 | 0 |   2 |
+| anthropic/claude-opus-4.8    |  893 | 182 | 316 | 136 | 302 | 0 |   7 |
+| google/gemini-3.1-flash-lite |  827 | 182 | 317 | 137 | 373 | 0 |   0 |
+| deepseek/deepseek-v4-pro     |  777 | 115 | 289 | 211 | 365 | 7 |  72 |
+| anthropic/claude-sonnet-4.6  |  703 | 138 | 338 | 205 | 449 | 0 |   3 |
+| openai/gpt-5.4-mini          |  538 | 104 | 200 | 153 | 841 | 0 |   0 |
+| moonshotai/kimi-k2.6         |  479 |  69 | 190 | 191 | 315 | 4 | 588 |
+| qwen/qwen3.7-plus *(partial)* | 190 |  37 | 101 |  10 | 315 | 2 |   0 |
+| mistralai/mistral-small-2603 |  346 |  86 | 269 | 192 | 900 | 0 |  43 |
 
 <sub>`correct` = acceptable match. Counts are per scored species; rows sum to
-1,836 (655 for the partial qwen run). Reasoning lifts accuracy for every model
-but inflates `refusal` for some (kimi-k2.6: 592, deepseek-v4-pro: 79).</sub>
+1,836 (655 for the partial qwen run). Reasoning lifts accuracy for every model,
+but some runs frequently exhaust their token limit (Kimi: 588; DeepSeek: 72).</sub>
 
 ## Development
 

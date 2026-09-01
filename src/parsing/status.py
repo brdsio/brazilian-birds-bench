@@ -29,7 +29,7 @@ comma that broke fragile CSV viewers.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 
 # Base tokens recognized. A token may carry a "#" suffix (unconfirmed) and/or
 # directions in parentheses, e.g. "VI# (S, N?)".

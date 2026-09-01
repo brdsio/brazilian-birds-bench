@@ -82,6 +82,7 @@ def classify_error(
     name_index: dict[str, dict[str, str]],
     is_acceptable: bool,
     finish_reason: str,
+    truncated: bool = False,
 ) -> str:
     """Classify the type of error for a benchmark result.
 
@@ -96,8 +97,12 @@ def classify_error(
     if is_acceptable:
         return "correct"
 
-    if not normalized_response or finish_reason == "error":
-        return "refusal"
+    if finish_reason == "error":
+        return "api_error"
+    if truncated or finish_reason == "length":
+        return "truncated"
+    if not normalized_response:
+        return "empty_response"
 
     dist = taxonomic_distance(target_row, normalized_response, name_index)
     return {
