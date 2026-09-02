@@ -153,6 +153,45 @@ bbb run --model openai/gpt-5.5 --max-tokens 2048 --temperature 0.0
 bbb run --model openai/gpt-5.5 --output results/custom.csv
 ```
 
+### Discounted asynchronous batches
+
+Models with an OpenRouter `:batch` variant can be submitted through the
+asynchronous Batch API at the provider's discounted price. Submission,
+inspection, and collection are separate so the run survives process exits:
+
+```bash
+bbb batch-submit \
+  --model anthropic/claude-fable-5.1 \
+  --benchmark-mode reasoning
+
+bbb batch-status \
+  --state results/anthropic--claude-fable-5.1_reasoning.batch.json
+
+bbb batch-collect \
+  --state results/anthropic--claude-fable-5.1_reasoning.batch.json \
+  --wait
+```
+
+`batch-submit` verifies that the exact `<model>:batch` catalog entry exists and
+refuses to substitute another version. Use `--dry-run` to validate without
+submitting, and `--limit 3` for a deliberately partial, low-cost smoke test.
+Batch inputs and outputs are retained by OpenRouter for 30 days.
+
+For a complete benchmark under a limited balance, use the sequential runner:
+
+```bash
+bbb batch-run \
+  --model anthropic/claude-fable-5.1 \
+  --benchmark-mode reasoning
+```
+
+It reads model-specific defaults from `batch_by_model` in the config (200
+species per batch and 512 output tokens for Fable 5.1), submits only one batch
+at a time, waits, scores and saves it, then continues automatically. Progress
+is written after every transition. If the process is interrupted, run the same
+command again: it resumes the active remote batch and skips collected species.
+Use `--dry-run` to inspect the chunk plan without submitting anything.
+
 ## 3. Scoring (`bbb score`)
 
 Scoring is applied during `bbb run` and can be re-run standalone with

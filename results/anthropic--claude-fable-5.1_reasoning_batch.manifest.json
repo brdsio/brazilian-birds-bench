@@ -1,0 +1,38 @@
+{
+  "batch_ids": [
+    "batch-1788360747-pYewfOMczkxJrDOjPz8M",
+    "batch-1788361307-utBOcqdBrc26cMVU6zjP",
+    "batch-1788361955-05yFhH3NtixygT0LSQwI",
+    "batch-1788362630-Ow5rxS3GdYkiBfrgxFUJ",
+    "batch-1788363276-4WWvtKpzvoD01PQnkZAD",
+    "batch-1788363588-lrxThKcRJzCLuH8BdBQ9",
+    "batch-1788364235-D9Ri3XuE8kO8s4I68iYS",
+    "batch-1788364548-dUyZdNvs7g6OFpXdGDHH",
+    "batch-1788365133-GODREl3BvTBi9hIcaJpy",
+    "batch-1788365688-kylncLqrl9vpbPHia8B5"
+  ],
+  "batch_variant": "anthropic/claude-fable-5.1:batch",
+  "benchmark_mode": "reasoning",
+  "catalog_canonical_slug": "anthropic/claude-fable-5.1-20260831",
+  "chunk_size": 200,
+  "completed_count": 1836,
+  "config_sha256": "b6947a26a2864f39656f96d03ae57bc94d90696c5411b6cde8a7962f5dbfe7c9",
+  "dataset": "src/data/benchmark_dataset.csv",
+  "dataset_sha256": "df6d737917b5d47bd7b2730d49c872473eeb38ad7b697d7f9e1dd061c842342e",
+  "execution_mode": "openrouter_batch_sequence",
+  "git_commit": "38a51d5ae9c960fe734cfcdf7c93914502b61c96",
+  "max_tokens": 512,
+  "output": "results/anthropic--claude-fable-5.1_reasoning_batch.csv",
+  "poll_seconds": 30,
+  "prompt_sha256": "2cf9e7f88e9d3e34f668231b6d05aadf6f0b9400a839114d823288ade52c226b",
+  "provider_config": null,
+  "python_version": "3.12.3",
+  "reasoning_config": {
+    "effort": "low"
+  },
+  "requested_model": "anthropic/claude-fable-5.1",
+  "requests_version": "2.34.2",
+  "run_started_at_utc": "2026-09-02T14:52:27.253959+00:00",
+  "schema_version": 1,
+  "temperature": 0.0
+}

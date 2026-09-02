@@ -22,11 +22,13 @@ import platform
 import random
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 
 import click
+import requests
 
 from .enrichment.avilist import (
     AVILIST_FIELDS,
@@ -129,6 +131,14 @@ def _write_manifest(
     )
 
 
+def _write_json(path: Path, value: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _index_resume_rows(
     rows: list[dict[str, str]],
     model: str,
@@ -170,6 +180,31 @@ def _download(url: str, dest: Path) -> None:
             for chunk in resp.iter_content(chunk_size=1 << 16):
                 fh.write(chunk)
     click.echo(f"Saved to {dest}", err=True)
+
+
+def _resolve_batch_settings(
+    model: str, benchmark_mode: str, config_path: Path,
+    max_tokens: int | None,
+) -> tuple[dict[str, object], int, dict[str, object] | None]:
+    if not config_path.exists():
+        raise click.ClickException(f"Benchmark config not found: {config_path}")
+    bench_config = json.loads(config_path.read_text(encoding="utf-8"))
+    resolved_max = max_tokens or bench_config.get("prompt", {}).get(
+        "max_tokens", 1024,
+    )
+    if benchmark_mode == "no_reasoning":
+        reasoning_config = {"effort": "none"}
+    else:
+        reasoning_config = bench_config.get("reasoning_by_model", {}).get(model)
+        if reasoning_config is None:
+            raise click.ClickException(
+                f"Model {model!r} not found in reasoning_by_model in {config_path}."
+            )
+        reasoning_config = {
+            key: value for key, value in reasoning_config.items()
+            if key != "exclude"
+        }
+    return bench_config, int(resolved_max), reasoning_config
 
 
 # ---------------------------------------------------------------------------
@@ -646,6 +681,501 @@ def score(input_path: Path, output_path: Path | None, dataset_path: Path) -> Non
 
     click.echo(f"Re-scored {len(scored)} rows -> {output_path}", err=True)
     _print_run_summary(scored, output_path)
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter Batch API
+# ---------------------------------------------------------------------------
+
+@cli.command("batch-submit")
+@click.option("--model", required=True, help="Concrete OpenRouter model ID.")
+@click.option(
+    "--benchmark-mode", type=click.Choice(["no_reasoning", "reasoning"]),
+    required=True,
+)
+@click.option(
+    "--dataset", "dataset_path", type=click.Path(exists=True, path_type=Path),
+    default=DEFAULT_DATASET, show_default=True,
+)
+@click.option(
+    "--config", "config_path", type=click.Path(exists=True, path_type=Path),
+    default="benchmark_config.json", show_default=True,
+)
+@click.option("--state", "state_path", type=click.Path(path_type=Path), default=None)
+@click.option("--token", default=None)
+@click.option("--max-tokens", type=int, default=None)
+@click.option("--temperature", type=float, default=0.0, show_default=True)
+@click.option("--provider", default=None)
+@click.option(
+    "--allow-provider-fallback/--no-provider-fallback", default=False,
+)
+@click.option(
+    "--dry-run", is_flag=True,
+    help="Validate availability and print the plan without submitting or charging.",
+)
+@click.option(
+    "--limit", type=click.IntRange(min=1), default=None,
+    help="Submit only the first N eligible species (smoke tests only).",
+)
+def batch_submit(
+    model: str, benchmark_mode: str, dataset_path: Path, config_path: Path,
+    state_path: Path | None, token: str | None, max_tokens: int | None,
+    temperature: float, provider: str | None, allow_provider_fallback: bool,
+    dry_run: bool, limit: int | None,
+) -> None:
+    """Submit the complete benchmark to OpenRouter's asynchronous Batch API."""
+    from .batch import (
+        batch_custom_id,
+        batch_variant,
+        submit_batch,
+        validate_batch_model,
+    )
+    from .runner import get_openrouter_token
+
+    model = model.removesuffix(":batch")
+    _, max_tokens, reasoning_config = _resolve_batch_settings(
+        model, benchmark_mode, config_path, max_tokens,
+    )
+    provider_config = None
+    if provider:
+        provider_config = {
+            "order": [provider], "allow_fallbacks": allow_provider_fallback,
+            "require_parameters": True,
+        }
+    dataset = [
+        row for row in _load_csv(dataset_path)
+        if row.get("ebird_matched") != "False"
+        and row.get("avilist_matched") != "False"
+    ]
+    if limit is not None:
+        dataset = dataset[:limit]
+    try:
+        catalog_model = validate_batch_model(model, token)
+    except (ValueError, requests.RequestException) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if state_path is None:
+        state_path = Path(
+            f"results/{_model_slug(model)}_{benchmark_mode}.batch.json"
+        )
+    click.echo(
+        f"Batch variant:  {batch_variant(model)}\n"
+        f"Canonical:      {catalog_model.get('canonical_slug', '')}\n"
+        f"Requests:       {len(dataset)}\n"
+        f"Reasoning cfg:  {reasoning_config}\n"
+        f"State:          {state_path}",
+        err=True,
+    )
+    if dry_run:
+        return
+
+    resolved_token = get_openrouter_token(token)
+    try:
+        batch = submit_batch(
+            dataset, model, resolved_token, temperature=temperature,
+            max_tokens=max_tokens, reasoning_config=reasoning_config,
+            provider_config=provider_config,
+        )
+    except requests.RequestException as exc:
+        raise click.ClickException(str(exc)) from exc
+    run_meta = _run_metadata(dataset_path, config_path)
+    state = {
+        "schema_version": 1,
+        "execution_mode": "openrouter_batch",
+        "batch_id": batch["id"],
+        "batch_status": batch.get("status", ""),
+        "batch_variant": batch_variant(model),
+        "catalog_canonical_slug": catalog_model.get("canonical_slug", ""),
+        "requested_model": model,
+        "benchmark_mode": benchmark_mode,
+        "reasoning_config": reasoning_config,
+        "provider_config": provider_config,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "dataset": str(dataset_path),
+        "config": str(config_path),
+        "request_count": len(dataset),
+        "selected_cbro_ids": [row["cbro_id"] for row in dataset],
+        "custom_id_map": {
+            batch_custom_id(row["cbro_id"]): row["cbro_id"] for row in dataset
+        },
+        "metadata": run_meta,
+        "submitted_at_utc": datetime.now(UTC).isoformat(),
+    }
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(state, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    click.echo(f"Submitted batch {batch['id']} ({batch.get('status', '')}).")
+
+
+@cli.command("batch-status")
+@click.option(
+    "--state", "state_path", required=True,
+    type=click.Path(exists=True, path_type=Path),
+)
+@click.option("--token", default=None)
+def batch_status(state_path: Path, token: str | None) -> None:
+    """Fetch and display the current status of a submitted batch."""
+    from .batch import get_batch
+    from .runner import get_openrouter_token
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    try:
+        batch = get_batch(state["batch_id"], get_openrouter_token(token))
+    except requests.RequestException as exc:
+        raise click.ClickException(str(exc)) from exc
+    state["batch_status"] = batch.get("status", "")
+    state["last_checked_at_utc"] = datetime.now(UTC).isoformat()
+    state_path.write_text(
+        json.dumps(state, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    click.echo(
+        f"Batch {state['batch_id']}: {batch.get('status', 'unknown')} "
+        f"({len(batch.get('results') or [])}/{state['request_count']} results)"
+    )
+
+
+@cli.command("batch-collect")
+@click.option(
+    "--state", "state_path", required=True,
+    type=click.Path(exists=True, path_type=Path),
+)
+@click.option("--output", "output_path", type=click.Path(path_type=Path), default=None)
+@click.option("--token", default=None)
+@click.option("--wait/--no-wait", default=False)
+@click.option("--poll-seconds", type=click.IntRange(min=5), default=30)
+def batch_collect(
+    state_path: Path, output_path: Path | None, token: str | None,
+    wait: bool, poll_seconds: int,
+) -> None:
+    """Collect a completed batch, score it, and write the standard result CSV."""
+    from .batch import TERMINAL_STATUSES, get_batch, parse_batch_result, wait_for_batch
+    from .runner import get_openrouter_token
+    from .scoring import build_name_index, score_row
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    resolved_token = get_openrouter_token(token)
+    if wait:
+        try:
+            batch = wait_for_batch(
+                state["batch_id"], resolved_token, poll_seconds=poll_seconds,
+            )
+        except requests.RequestException as exc:
+            raise click.ClickException(str(exc)) from exc
+    else:
+        try:
+            batch = get_batch(state["batch_id"], resolved_token)
+        except requests.RequestException as exc:
+            raise click.ClickException(str(exc)) from exc
+    status = batch.get("status", "")
+    if status not in TERMINAL_STATUSES:
+        raise click.ClickException(
+            f"Batch is {status!r}, not terminal. Use --wait or try again later."
+        )
+    if status != "completed":
+        raise click.ClickException(f"Batch ended with status {status!r}.")
+
+    dataset_path = Path(state["dataset"])
+    metadata = state["metadata"]
+    if _sha256(dataset_path) != metadata["dataset_sha256"]:
+        raise click.ClickException("Dataset hash differs from batch submission.")
+    full_dataset = [
+        row for row in _load_csv(dataset_path)
+        if row.get("ebird_matched") != "False"
+        and row.get("avilist_matched") != "False"
+    ]
+    dataset = full_dataset
+    selected_ids = set(state.get("selected_cbro_ids") or [])
+    if selected_ids:
+        dataset = [row for row in full_dataset if row["cbro_id"] in selected_ids]
+    name_index = build_name_index(full_dataset)
+    custom_id_map = state.get("custom_id_map") or {}
+    result_by_id = {
+        custom_id_map.get(str(item["custom_id"]), str(item["custom_id"])): item
+        for item in (batch.get("results") or [])
+    }
+    if output_path is None:
+        output_path = Path(
+            f"results/{_model_slug(state['requested_model'])}_batch_"
+            f"{state['benchmark_mode']}.csv"
+        )
+    run_meta = {
+        **metadata, "batch_id": state["batch_id"],
+        "execution_mode": "openrouter_batch",
+        "batch_variant": state["batch_variant"],
+        "catalog_canonical_slug": state["catalog_canonical_slug"],
+    }
+    scored: list[dict[str, object]] = []
+    for row in dataset:
+        item = result_by_id.get(row["cbro_id"])
+        if item is None:
+            item = {
+                "custom_id": row["cbro_id"],
+                "error": {"message": "Missing result in completed batch"},
+            }
+        llm = parse_batch_result(
+            item, reasoning_config=state["reasoning_config"],
+            benchmark_mode=state["benchmark_mode"],
+        )
+        merged = {**row, "model": state["requested_model"], **run_meta, **llm}
+        scored.append(score_row(merged, name_index))
+    _write_csv(scored, list(scored[0]), output_path)
+    _write_manifest(
+        output_path, run_meta, requested_model=state["requested_model"],
+        benchmark_mode=state["benchmark_mode"],
+        reasoning_config=state["reasoning_config"],
+        provider_config=state["provider_config"],
+        temperature=state["temperature"], max_tokens=state["max_tokens"],
+        dataset=state["dataset"], execution_mode="openrouter_batch",
+    )
+    _print_run_summary(scored, output_path)
+
+
+@cli.command("batch-run")
+@click.option("--model", required=True, help="Concrete OpenRouter model ID.")
+@click.option(
+    "--benchmark-mode", type=click.Choice(["no_reasoning", "reasoning"]),
+    required=True,
+)
+@click.option(
+    "--dataset", "dataset_path", type=click.Path(exists=True, path_type=Path),
+    default=DEFAULT_DATASET, show_default=True,
+)
+@click.option(
+    "--config", "config_path", type=click.Path(exists=True, path_type=Path),
+    default="benchmark_config.json", show_default=True,
+)
+@click.option("--output", "output_path", type=click.Path(path_type=Path), default=None)
+@click.option("--state", "state_path", type=click.Path(path_type=Path), default=None)
+@click.option("--token", default=None)
+@click.option("--max-tokens", type=click.IntRange(min=1), default=None)
+@click.option("--chunk-size", type=click.IntRange(min=1), default=None)
+@click.option("--poll-seconds", type=click.IntRange(min=5), default=None)
+@click.option("--temperature", type=float, default=0.0, show_default=True)
+@click.option("--provider", default=None)
+@click.option(
+    "--allow-provider-fallback/--no-provider-fallback", default=False,
+)
+@click.option(
+    "--dry-run", is_flag=True,
+    help="Validate and show the automatic chunk plan without submitting.",
+)
+def batch_run(
+    model: str, benchmark_mode: str, dataset_path: Path, config_path: Path,
+    output_path: Path | None, state_path: Path | None, token: str | None,
+    max_tokens: int | None, chunk_size: int | None, poll_seconds: int | None,
+    temperature: float, provider: str | None, allow_provider_fallback: bool,
+    dry_run: bool,
+) -> None:
+    """Run all species as sequential, resumable, discounted batches."""
+    from .batch import (
+        TERMINAL_STATUSES,
+        batch_custom_id,
+        batch_variant,
+        get_batch,
+        parse_batch_result,
+        submit_batch,
+        validate_batch_model,
+    )
+    from .runner import get_openrouter_token
+    from .scoring import build_name_index, score_row
+
+    model = model.removesuffix(":batch")
+    bench_config, resolved_max_tokens, reasoning_config = _resolve_batch_settings(
+        model, benchmark_mode, config_path, max_tokens,
+    )
+    model_defaults = bench_config.get("batch_by_model", {}).get(model, {})
+    chunk_size = chunk_size or int(model_defaults.get("chunk_size", 200))
+    poll_seconds = poll_seconds or int(model_defaults.get("poll_seconds", 30))
+    if max_tokens is None:
+        resolved_max_tokens = int(
+            model_defaults.get("max_tokens", resolved_max_tokens)
+        )
+    provider_config = None
+    if provider:
+        provider_config = {
+            "order": [provider], "allow_fallbacks": allow_provider_fallback,
+            "require_parameters": True,
+        }
+
+    full_dataset = [
+        row for row in _load_csv(dataset_path)
+        if row.get("ebird_matched") != "False"
+        and row.get("avilist_matched") != "False"
+    ]
+    try:
+        catalog_model = validate_batch_model(model, token)
+    except (ValueError, requests.RequestException) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    slug = _model_slug(model)
+    output_path = output_path or Path(
+        f"results/{slug}_{benchmark_mode}_batch.csv"
+    )
+    state_path = state_path or Path(
+        f"results/{slug}_{benchmark_mode}.batch-run.json"
+    )
+    chunk_count = (len(full_dataset) + chunk_size - 1) // chunk_size
+    click.echo(
+        f"Batch variant:  {batch_variant(model)}\n"
+        f"Canonical:      {catalog_model.get('canonical_slug', '')}\n"
+        f"Species:        {len(full_dataset)}\n"
+        f"Chunks:         {chunk_count} × up to {chunk_size}\n"
+        f"Max tokens:     {resolved_max_tokens}\n"
+        f"Reasoning cfg:  {reasoning_config}\n"
+        f"Output:         {output_path}\n"
+        f"State:          {state_path}",
+        err=True,
+    )
+    if dry_run:
+        return
+
+    run_meta = _run_metadata(dataset_path, config_path)
+    settings = {
+        "schema_version": 1,
+        "execution_mode": "openrouter_batch_sequence",
+        "requested_model": model,
+        "batch_variant": batch_variant(model),
+        "catalog_canonical_slug": catalog_model.get("canonical_slug", ""),
+        "benchmark_mode": benchmark_mode,
+        "reasoning_config": reasoning_config,
+        "provider_config": provider_config,
+        "temperature": temperature,
+        "max_tokens": resolved_max_tokens,
+        "chunk_size": chunk_size,
+        "poll_seconds": poll_seconds,
+        "dataset": str(dataset_path),
+        "output": str(output_path),
+    }
+    if state_path.exists():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        for key, expected in settings.items():
+            if state.get(key) != expected:
+                raise click.ClickException(
+                    f"Saved batch-run setting differs for {key}; refusing mixed run."
+                )
+        for key in ("dataset_sha256", "config_sha256", "prompt_sha256"):
+            if state.get("metadata", {}).get(key) != run_meta[key]:
+                raise click.ClickException(
+                    f"Saved batch-run metadata differs for {key}."
+                )
+    else:
+        if output_path.exists():
+            raise click.ClickException(
+                f"Output exists without its batch-run state: {output_path}"
+            )
+        state = {
+            **settings, "metadata": run_meta, "active_batch_id": "",
+            "active_cbro_ids": [], "custom_id_map": {}, "batch_ids": [],
+            "completed_count": 0, "created_at_utc": datetime.now(UTC).isoformat(),
+        }
+        _write_json(state_path, state)
+
+    existing_rows = _load_csv(output_path) if output_path.exists() else []
+    completed_by_id = {row["cbro_id"]: row for row in existing_rows}
+    name_index = build_name_index(full_dataset)
+    resolved_token = get_openrouter_token(token)
+
+    while len(completed_by_id) < len(full_dataset):
+        if not state.get("active_batch_id"):
+            pending = [
+                row for row in full_dataset if row["cbro_id"] not in completed_by_id
+            ]
+            chunk = pending[:chunk_size]
+            try:
+                batch = submit_batch(
+                    chunk, model, resolved_token, temperature=temperature,
+                    max_tokens=resolved_max_tokens,
+                    reasoning_config=reasoning_config,
+                    provider_config=provider_config,
+                )
+            except requests.RequestException as exc:
+                raise click.ClickException(str(exc)) from exc
+            state["active_batch_id"] = batch["id"]
+            state["active_cbro_ids"] = [row["cbro_id"] for row in chunk]
+            state["custom_id_map"] = {
+                batch_custom_id(row["cbro_id"]): row["cbro_id"] for row in chunk
+            }
+            state["batch_ids"].append(batch["id"])
+            state["active_status"] = batch.get("status", "")
+            _write_json(state_path, state)
+            click.echo(
+                f"Submitted chunk {len(state['batch_ids'])}/{chunk_count}: "
+                f"{batch['id']} ({len(chunk)} species).",
+                err=True,
+            )
+
+        batch_id = str(state["active_batch_id"])
+        last_status = ""
+        while True:
+            try:
+                batch = get_batch(batch_id, resolved_token)
+            except requests.RequestException as exc:
+                raise click.ClickException(str(exc)) from exc
+            status = str(batch.get("status", ""))
+            if status != last_status:
+                click.echo(f"Batch {batch_id}: {status}", err=True)
+                last_status = status
+                state["active_status"] = status
+                _write_json(state_path, state)
+            if status in TERMINAL_STATUSES:
+                break
+            time.sleep(poll_seconds)
+        if status != "completed":
+            raise click.ClickException(
+                f"Batch {batch_id} ended with {status!r}; state preserved."
+            )
+
+        custom_id_map = state["custom_id_map"]
+        result_by_id = {
+            custom_id_map.get(str(item["custom_id"]), str(item["custom_id"])): item
+            for item in (batch.get("results") or [])
+        }
+        active_ids = set(state["active_cbro_ids"])
+        for row in full_dataset:
+            if row["cbro_id"] not in active_ids:
+                continue
+            item = result_by_id.get(row["cbro_id"])
+            if item is None:
+                item = {
+                    "custom_id": batch_custom_id(row["cbro_id"]),
+                    "error": {"message": "Missing result in completed batch"},
+                }
+            llm = parse_batch_result(
+                item, reasoning_config=reasoning_config,
+                benchmark_mode=benchmark_mode,
+            )
+            merged = {
+                **row, "model": model, **state["metadata"],
+                "batch_id": batch_id,
+                "execution_mode": "openrouter_batch_sequence", **llm,
+            }
+            completed_by_id[row["cbro_id"]] = score_row(merged, name_index)
+
+        ordered = [
+            completed_by_id[row["cbro_id"]] for row in full_dataset
+            if row["cbro_id"] in completed_by_id
+        ]
+        _write_csv(ordered, list(ordered[0]), output_path)
+        state["completed_count"] = len(ordered)
+        state["active_batch_id"] = ""
+        state["active_cbro_ids"] = []
+        state["custom_id_map"] = {}
+        state["active_status"] = ""
+        state["updated_at_utc"] = datetime.now(UTC).isoformat()
+        _write_json(state_path, state)
+        click.echo(
+            f"Collected {len(ordered)}/{len(full_dataset)} species.", err=True,
+        )
+
+    _write_manifest(
+        output_path, state["metadata"], **settings,
+        batch_ids=state["batch_ids"], completed_count=len(completed_by_id),
+    )
+    _print_run_summary(list(completed_by_id.values()), output_path)
 
 
 # ---------------------------------------------------------------------------
