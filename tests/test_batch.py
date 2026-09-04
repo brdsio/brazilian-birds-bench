@@ -99,3 +99,43 @@ def test_batch_run_dry_run_uses_fable_defaults(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "10 × up to 200" in result.output
     assert "Max tokens:     512" in result.output
+
+
+def test_batch_status_accepts_batch_run_state(monkeypatch, tmp_path):
+    state_path = tmp_path / "run.batch-run.json"
+    state_path.write_text(
+        json.dumps({
+            "active_batch_id": "batch-1",
+            "active_cbro_ids": ["CBRO#0004", "CBRO#0011"],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "src.batch.get_batch",
+        lambda batch_id, token: {
+            "id": batch_id, "status": "in_progress", "results": [],
+        },
+    )
+    monkeypatch.setattr("src.runner.get_openrouter_token", lambda token: "token")
+
+    result = CliRunner().invoke(cli, ["batch-status", "--state", str(state_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "Batch batch-1: in_progress (0/2 results)" in result.output
+
+
+def test_batch_status_rejects_completed_batch_run_without_active_id(tmp_path):
+    state_path = tmp_path / "completed.batch-run.json"
+    state_path.write_text(
+        json.dumps({
+            "batch_status": "completed",
+            "completed_count": 1836,
+            "active_batch_id": "",
+        }),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli, ["batch-status", "--state", str(state_path)])
+
+    assert result.exit_code != 0
+    assert "No active batch ID found" in result.output

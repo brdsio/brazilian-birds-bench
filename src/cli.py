@@ -822,8 +822,16 @@ def batch_status(state_path: Path, token: str | None) -> None:
     from .runner import get_openrouter_token
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
+    batch_id = state.get("batch_id") or state.get("active_batch_id")
+    if not batch_id:
+        raise click.ClickException(
+            f"No active batch ID found in state file: {state_path}"
+        )
+    request_count = state.get("request_count") or len(
+        state.get("active_cbro_ids", [])
+    )
     try:
-        batch = get_batch(state["batch_id"], get_openrouter_token(token))
+        batch = get_batch(batch_id, get_openrouter_token(token))
     except requests.RequestException as exc:
         raise click.ClickException(str(exc)) from exc
     state["batch_status"] = batch.get("status", "")
@@ -833,8 +841,8 @@ def batch_status(state_path: Path, token: str | None) -> None:
         encoding="utf-8",
     )
     click.echo(
-        f"Batch {state['batch_id']}: {batch.get('status', 'unknown')} "
-        f"({len(batch.get('results') or [])}/{state['request_count']} results)"
+        f"Batch {batch_id}: {batch.get('status', 'unknown')} "
+        f"({len(batch.get('results') or [])}/{request_count} results)"
     )
 
 
@@ -1171,9 +1179,14 @@ def batch_run(
             f"Collected {len(ordered)}/{len(full_dataset)} species.", err=True,
         )
 
+    completed_at = state.get("updated_at_utc") or datetime.now(UTC).isoformat()
+    state["batch_status"] = "completed"
+    state["run_completed_at_utc"] = completed_at
+    _write_json(state_path, state)
     _write_manifest(
         output_path, state["metadata"], **settings,
         batch_ids=state["batch_ids"], completed_count=len(completed_by_id),
+        run_completed_at_utc=completed_at,
     )
     _print_run_summary(list(completed_by_id.values()), output_path)
 

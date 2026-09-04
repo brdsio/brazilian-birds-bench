@@ -1,0 +1,39 @@
+{
+  "batch_ids": [
+    "batch-1788368587-k7ek5Yt2W3re415FwLhd",
+    "batch-1788370856-7uKag3QObtk2aAby5GrW",
+    "batch-1788371075-nWJ6eFFTD0dBuSPMZL3d",
+    "batch-1788373245-IIkhUMVoayeWalUGnTLS",
+    "batch-1788373615-TDyevXXBZeYns7apj9Aa",
+    "batch-1788374268-1oAtIZ4Hoo8ZpivS5i72",
+    "batch-1788375314-ru0INX3CZUqxj3B7kUxg",
+    "batch-1788377942-0I3e8oFmqf9gKn47PaPm",
+    "batch-1788380574-zyRBaJVwdTJIbcCIx4e0",
+    "batch-1788382902-LsiyOpYhP9e4gfaveRF5"
+  ],
+  "batch_variant": "openai/gpt-5.6-sol:batch",
+  "benchmark_mode": "reasoning",
+  "catalog_canonical_slug": "openai/gpt-5.6-sol-20260709",
+  "chunk_size": 200,
+  "completed_count": 1836,
+  "config_sha256": "49315225e7da4f97389e25e9fdf84567d8efeffb6f120d49352997890291c27c",
+  "dataset": "src/data/benchmark_dataset.csv",
+  "dataset_sha256": "df6d737917b5d47bd7b2730d49c872473eeb38ad7b697d7f9e1dd061c842342e",
+  "execution_mode": "openrouter_batch_sequence",
+  "git_commit": "e6685f4e792578435a1a400deb9699ba75317ded",
+  "max_tokens": 2048,
+  "output": "results/openai--gpt-5.6-sol_reasoning_batch.csv",
+  "poll_seconds": 30,
+  "prompt_sha256": "2cf9e7f88e9d3e34f668231b6d05aadf6f0b9400a839114d823288ade52c226b",
+  "provider_config": null,
+  "python_version": "3.12.3",
+  "reasoning_config": {
+    "effort": "minimal"
+  },
+  "requested_model": "openai/gpt-5.6-sol",
+  "requests_version": "2.34.2",
+  "run_started_at_utc": "2026-09-02T17:03:07.018357+00:00",
+  "run_completed_at_utc": "2026-09-02T23:47:33.082231+00:00",
+  "schema_version": 1,
+  "temperature": 0.0
+}

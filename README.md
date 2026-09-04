@@ -252,20 +252,24 @@ re-apply scoring.
 
 ## Results
 
-Benchmarks run June 2026 via OpenRouter — zero-shot, `temperature 0`, single run
-per species, **1,836 scored species** (those with both an eBird and AviList
-match). `no_reasoning` snapshot: 2026-06-24 · `reasoning` snapshot: 2026-06-29
-(see the `benchmarks-*` git tags). `accept` = the answer matches the English name
-of any of the three authorities (CBRO/eBird/AviList). `qwen3.7-plus` reasoning is
-a **partial run (655/1,836 rows)** — its percentages are not directly comparable.
+Benchmarks run June–September 2026 via OpenRouter — zero-shot, `temperature 0`,
+single run per species, **1,836 scored species** (those with both an eBird and
+AviList match). The original `no_reasoning` and `reasoning` snapshots are dated
+2026-06-24 and 2026-06-29 (see the `benchmarks-*` git tags); Fable 5.1 and
+GPT-5.6 were added on 2026-09-02 for v1.1. `accept` = the answer matches the
+English name of any of the three authorities (CBRO/eBird/AviList).
+`qwen3.7-plus` reasoning is a **partial run (655/1,836 rows)** — its percentages
+are not directly comparable.
 
 ### Accuracy (acceptable match)
 
 | Model | no_reasoning | reasoning |
 |-------|-------------:|----------:|
-| openai/gpt-5.5               | 33.44% | **73.04%** |
+| openai/gpt-5.6-sol           | — | **78.16%** |
+| openai/gpt-5.5               | 33.44% | 73.04% |
 | anthropic/claude-opus-4.8    | 32.19% | 48.64% |
 | google/gemini-3.1-flash-lite | 32.41% | 45.04% |
+| anthropic/claude-fable-5.1   | — | 44.01% |
 | deepseek/deepseek-v4-pro     | 30.88% | 42.32% |
 | anthropic/claude-sonnet-4.6  | 24.56% | 38.29% |
 | openai/gpt-5.4-mini          | 18.79% | 29.30% |
@@ -293,9 +297,11 @@ a **partial run (655/1,836 rows)** — its percentages are not directly comparab
 
 | Model | correct | intra_genus | intra_family | intra_order | hallucinated | API error | truncated |
 |-------|--------:|------------:|-------------:|------------:|-------------:|----------:|----------:|
+| openai/gpt-5.6-sol           | 1435 |  74 | 102 |  39 | 181 | 0 |   5 |
 | openai/gpt-5.5               | 1341 |  91 | 117 |  71 | 214 | 0 |   2 |
 | anthropic/claude-opus-4.8    |  893 | 182 | 316 | 136 | 302 | 0 |   7 |
 | google/gemini-3.1-flash-lite |  827 | 182 | 317 | 137 | 373 | 0 |   0 |
+| anthropic/claude-fable-5.1   |  808 | 147 | 290 | 187 | 374 | 0 |  30 |
 | deepseek/deepseek-v4-pro     |  777 | 115 | 289 | 211 | 365 | 7 |  72 |
 | anthropic/claude-sonnet-4.6  |  703 | 138 | 338 | 205 | 449 | 0 |   3 |
 | openai/gpt-5.4-mini          |  538 | 104 | 200 | 153 | 841 | 0 |   0 |
@@ -304,8 +310,11 @@ a **partial run (655/1,836 rows)** — its percentages are not directly comparab
 | mistralai/mistral-small-2603 |  346 |  86 | 269 | 192 | 900 | 0 |  43 |
 
 <sub>`correct` = acceptable match. Counts are per scored species; rows sum to
-1,836 (655 for the partial qwen run). Reasoning lifts accuracy for every model,
-but some runs frequently exhaust their token limit (Kimi: 588; DeepSeek: 72).</sub>
+1,836 (655 for the partial qwen run). Reasoning lifts accuracy for every model
+with both conditions, but some runs frequently exhaust their token limit
+(Kimi: 588; DeepSeek: 72; Fable: 30; GPT-5.6: 5). Truncations consumed exactly
+the configured output limit and remain in the denominator; they were not
+selectively rerun.</sub>
 
 ## Development
 
@@ -317,8 +326,9 @@ ruff check .
 
 ## Methodology and citation
 
-The frozen v1.0 experimental protocol, statistical procedure, limitations, and
-reproducibility notes are documented in [METHODS.md](METHODS.md). Citation
+The v1.1 release and its frozen v1.0 experimental protocol, statistical
+procedure, limitations, and reproducibility notes are documented in
+[METHODS.md](METHODS.md). Citation
 metadata is provided in [CITATION.cff](CITATION.cff).
 
 ## License

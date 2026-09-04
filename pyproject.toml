@@ -1,6 +1,6 @@
 [project]
 name = "brazilian-birds-bench"
-version = "1.0.0"
+version = "1.1.0"
 description = "A benchmark of LLM knowledge on Brazilian bird names (PT -> EN), built on the CBRO checklist."
 readme = "README.md"
 requires-python = ">=3.12"
