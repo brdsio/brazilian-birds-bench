@@ -82,13 +82,13 @@ MUTED = "#66757F"
 BACKGROUND = "#FAFCFC"
 
 LABS = {
-    "OpenAI": ("#10A37F", "openai"),
-    "Anthropic": ("#D97757", "anthropic"),
-    "Google": ("#4285F4", "google"),
-    "DeepSeek": ("#4D6BFE", "deepseek"),
-    "Qwen": ("#6554C0", "qwen"),
-    "Moonshot AI": ("#252A34", "kimi"),
-    "Mistral AI": ("#F26B38", "mistralai"),
+    "OpenAI": ("#1F1F1F", "openai"),
+    "Anthropic": ("#CC785C", "anthropic"),
+    "Google": ("#1C7FF8", "google"),
+    "DeepSeek": ("#2243E6", "deepseek"),
+    "Qwen": ("#736CD3", "qwen"),
+    "Moonshot AI": ("#505050", "kimi"),
+    "Mistral AI": ("#FF7018", "mistralai"),
 }
 
 MODEL_LABS = {
@@ -116,14 +116,14 @@ def accuracy(filename: str) -> float:
     return sum(row["acceptable_match"].lower() == "true" for row in rows) / len(rows)
 
 
-def finish(fig: plt.Figure, stem: str) -> None:
+def finish(fig: plt.Figure, stem: str, *, facecolor: str = BACKGROUND) -> None:
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    fig.savefig(OUTPUT / f"{stem}.svg", bbox_inches="tight", facecolor=BACKGROUND)
+    fig.savefig(OUTPUT / f"{stem}.svg", bbox_inches="tight", facecolor=facecolor)
     fig.savefig(
         OUTPUT / f"{stem}.png",
         dpi=200,
         bbox_inches="tight",
-        facecolor=BACKGROUND,
+        facecolor=facecolor,
     )
     plt.close(fig)
 
@@ -146,8 +146,12 @@ def vertical_brand_leaderboard() -> None:
 
     fig, ax = plt.subplots(figsize=(16, 9))
     fig.subplots_adjust(left=0.06, right=0.98, top=0.83, bottom=0.34)
-    fig.patch.set_facecolor(BACKGROUND)
-    ax.set_facecolor(BACKGROUND)
+    aa_background = "#FFFFFF"
+    aa_ink = "#1F1F1F"
+    aa_muted = "#707070"
+    aa_grid = "#E7E7E7"
+    fig.patch.set_facecolor(aa_background)
+    ax.set_facecolor(aa_background)
 
     bar_width = 0.72
     for x, (label, value, lab) in enumerate(zip(labels, values, labs, strict=True)):
@@ -204,7 +208,7 @@ def vertical_brand_leaderboard() -> None:
             rotation=52,
             ha="right",
             va="top",
-            color=INK,
+            color=aa_ink,
             fontsize=10,
             fontweight="semibold",
         )
@@ -213,24 +217,33 @@ def vertical_brand_leaderboard() -> None:
     ax.set_ylim(0, 0.9)
     ax.yaxis.set_major_formatter(PercentFormatter(1))
     ax.set_yticks([0, 0.2, 0.4, 0.6, 0.8])
-    ax.grid(axis="y", color=GRID, linewidth=1)
+    ax.grid(axis="y", color=aa_grid, linewidth=0.8)
     ax.set_axisbelow(True)
     ax.set_xticks([])
     ax.set_title(
-        "How well do AI models know Brazilian birds?",
+        "Brazilian Birds Benchmark",
         loc="left",
-        color=INK,
-        fontsize=27,
+        color=aa_ink,
+        fontsize=24,
         fontweight="bold",
-        pad=32,
+        pad=34,
     )
     ax.text(
         0,
         1.035,
-        "Acceptable-match accuracy with reasoning · 1,836 species",
+        "Acceptable-match accuracy · Reasoning enabled · 1,836 species",
         transform=ax.transAxes,
-        color=MUTED,
-        fontsize=13,
+        color=aa_muted,
+        fontsize=12,
+    )
+    ax.text(
+        1,
+        1.035,
+        "Higher is better ↑",
+        transform=ax.transAxes,
+        ha="right",
+        color=aa_muted,
+        fontsize=10,
     )
     ax.text(
         0,
@@ -238,13 +251,13 @@ def vertical_brand_leaderboard() -> None:
         "* Qwen reasoning run is partial (655 species). "
         "Source: Brazilian Birds Bench v1.2.",
         transform=ax.transAxes,
-        color=MUTED,
+        color=aa_muted,
         fontsize=10,
     )
-    ax.tick_params(axis="y", colors=MUTED, labelsize=10, length=0)
+    ax.tick_params(axis="y", colors=aa_muted, labelsize=10, length=0)
     for spine in ax.spines.values():
         spine.set_visible(False)
-    finish(fig, "vertical_brand_leaderboard_v1_2")
+    finish(fig, "vertical_brand_leaderboard_aa_style_v1_2", facecolor=aa_background)
 
 
 def leaderboard() -> None:
