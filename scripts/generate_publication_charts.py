@@ -14,6 +14,7 @@ from urllib.request import urlopen
 
 import cairosvg
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.patches import FancyBboxPatch
 from matplotlib.ticker import PercentFormatter
@@ -107,6 +108,17 @@ MODEL_LABS = {
     "Mistral Small": "Mistral AI",
 }
 
+INTER_FONTS = {
+    400: "https://fonts.gstatic.com/s/inter/v20/"
+    "UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuLyfMZg.ttf",
+    500: "https://fonts.gstatic.com/s/inter/v20/"
+    "UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuI6fMZg.ttf",
+    600: "https://fonts.gstatic.com/s/inter/v20/"
+    "UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuGKYMZg.ttf",
+    700: "https://fonts.gstatic.com/s/inter/v20/"
+    "UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuFuYMZg.ttf",
+}
+
 csv.field_size_limit(sys.maxsize)
 
 
@@ -138,8 +150,22 @@ def lab_icon(slug: str, color: str):
     return plt.imread(BytesIO(png), format="png")
 
 
+def install_inter_font() -> None:
+    """Cache and register Inter for the publication chart."""
+    font_dir = Path("/tmp/brazilian-birds-bench-fonts")
+    font_dir.mkdir(parents=True, exist_ok=True)
+    for weight, url in INTER_FONTS.items():
+        path = font_dir / f"Inter-{weight}.ttf"
+        if not path.exists():
+            with urlopen(url, timeout=30) as response:
+                path.write_bytes(response.read())
+        font_manager.fontManager.addfont(path)
+
+
 def vertical_brand_leaderboard() -> None:
     """Create the English, brand-colored chart intended for the blog post."""
+    install_inter_font()
+    plt.rcParams["font.family"] = "Inter"
     labels = [model[0] for model in MODELS]
     values = [accuracy(model[2]) for model in MODELS]
     labs = [MODEL_LABS[label] for label in labels]
@@ -160,7 +186,7 @@ def vertical_brand_leaderboard() -> None:
             (x - bar_width / 2, 0),
             bar_width,
             value,
-            boxstyle="round,pad=0,rounding_size=0.055",
+            boxstyle="round,pad=0,rounding_size=0.018",
             linewidth=0,
             facecolor=color,
             zorder=3,
@@ -174,7 +200,7 @@ def vertical_brand_leaderboard() -> None:
             va="top",
             color="white",
             fontsize=11,
-            fontweight="bold",
+            fontweight=600,
             zorder=4,
         )
         try:
@@ -198,7 +224,7 @@ def vertical_brand_leaderboard() -> None:
                 va="center",
                 color=color,
                 fontsize=16,
-                fontweight="bold",
+                fontweight=600,
             )
         ax.text(
             x,
@@ -210,7 +236,7 @@ def vertical_brand_leaderboard() -> None:
             va="top",
             color=aa_ink,
             fontsize=10,
-            fontweight="semibold",
+            fontweight=500,
         )
 
     ax.set_xlim(-0.7, len(labels) - 0.3)
@@ -225,7 +251,7 @@ def vertical_brand_leaderboard() -> None:
         loc="left",
         color=aa_ink,
         fontsize=24,
-        fontweight="bold",
+        fontweight=600,
         pad=34,
     )
     ax.text(
