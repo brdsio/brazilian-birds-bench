@@ -16,7 +16,8 @@ import cairosvg
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
-from matplotlib.patches import FancyBboxPatch
+from matplotlib.patches import PathPatch
+from matplotlib.path import Path as MplPath
 from matplotlib.ticker import PercentFormatter
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -162,6 +163,42 @@ def install_inter_font() -> None:
         font_manager.fontManager.addfont(path)
 
 
+def top_rounded_bar(
+    x: float,
+    height: float,
+    width: float,
+    color: str,
+) -> PathPatch:
+    """Return a bar with a square base and clearly rounded top corners."""
+    left = x - width / 2
+    right = x + width / 2
+    radius_x = min(0.09, width / 3)
+    radius_y = min(0.025, height / 3)
+    vertices = [
+        (left, 0),
+        (left, height - radius_y),
+        (left, height),
+        (left + radius_x, height),
+        (right - radius_x, height),
+        (right, height),
+        (right, height - radius_y),
+        (right, 0),
+        (left, 0),
+    ]
+    codes = [
+        MplPath.MOVETO,
+        MplPath.LINETO,
+        MplPath.CURVE3,
+        MplPath.CURVE3,
+        MplPath.LINETO,
+        MplPath.CURVE3,
+        MplPath.CURVE3,
+        MplPath.LINETO,
+        MplPath.CLOSEPOLY,
+    ]
+    return PathPatch(MplPath(vertices, codes), linewidth=0, facecolor=color, zorder=3)
+
+
 def vertical_brand_leaderboard() -> None:
     """Create the English, brand-colored chart intended for the blog post."""
     install_inter_font()
@@ -182,16 +219,7 @@ def vertical_brand_leaderboard() -> None:
     bar_width = 0.72
     for x, (label, value, lab) in enumerate(zip(labels, values, labs, strict=True)):
         color, slug = LABS[lab]
-        bar = FancyBboxPatch(
-            (x - bar_width / 2, 0),
-            bar_width,
-            value,
-            boxstyle="round,pad=0,rounding_size=0.018",
-            linewidth=0,
-            facecolor=color,
-            zorder=3,
-        )
-        ax.add_patch(bar)
+        ax.add_patch(top_rounded_bar(x, value, bar_width, color))
         ax.text(
             x,
             value - 0.035,
