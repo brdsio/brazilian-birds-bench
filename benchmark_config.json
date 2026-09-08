@@ -1,5 +1,5 @@
 {
-  "description": "Benchmark configuration for brazilian-birds-bench v1.1",
+  "description": "Benchmark configuration for brazilian-birds-bench v1.2",
   "benchmark_modes": [
     "no_reasoning",
     "reasoning"
@@ -15,6 +15,7 @@
   },
   "models": [
     "google/gemini-3.1-flash-lite",
+    "google/gemini-3.8-flash",
     "anthropic/claude-opus-4.8",
     "anthropic/claude-sonnet-4.6",
     "anthropic/claude-fable-5.1",
@@ -29,6 +30,10 @@
   ],
   "reasoning_by_model": {
     "google/gemini-3.1-flash-lite": {
+      "effort": "low",
+      "exclude": true
+    },
+    "google/gemini-3.8-flash": {
       "effort": "low",
       "exclude": true
     },
@@ -82,6 +87,7 @@
   "reasoning_groups": {
     "effort_low": [
       "google/gemini-3.1-flash-lite",
+      "google/gemini-3.8-flash",
       "anthropic/claude-fable-5.1"
     ],
     "effort_minimal": [
@@ -100,6 +106,11 @@
     ]
   },
   "batch_by_model": {
+    "google/gemini-3.8-flash": {
+      "chunk_size": 200,
+      "max_tokens": 2048,
+      "poll_seconds": 30
+    },
     "anthropic/claude-fable-5.1": {
       "chunk_size": 200,
       "max_tokens": 512,

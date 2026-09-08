@@ -256,8 +256,9 @@ Benchmarks run June–September 2026 via OpenRouter — zero-shot, `temperature 
 single run per species, **1,836 scored species** (those with both an eBird and
 AviList match). The original `no_reasoning` and `reasoning` snapshots are dated
 2026-06-24 and 2026-06-29 (see the `benchmarks-*` git tags); Fable 5.1 and
-GPT-5.6 were added on 2026-09-02 for v1.1. `accept` = the answer matches the
-English name of any of the three authorities (CBRO/eBird/AviList).
+GPT-5.6 were added on 2026-09-02 for v1.1; Gemini 3.8 Flash and GPT-6 Astra were
+added on 2026-09-08 for v1.2. `accept` = the answer matches the English name of
+any of the three authorities (CBRO/eBird/AviList).
 `qwen3.7-plus` reasoning is a **partial run (655/1,836 rows)** — its percentages
 are not directly comparable.
 
@@ -265,9 +266,11 @@ are not directly comparable.
 
 | Model | no_reasoning | reasoning |
 |-------|-------------:|----------:|
-| openai/gpt-5.6-sol           | — | **78.16%** |
+| openai/gpt-6-astra           | — | **83.17%** |
+| openai/gpt-5.6-sol           | — | 78.16% |
 | openai/gpt-5.5               | 33.44% | 73.04% |
 | anthropic/claude-opus-4.8    | 32.19% | 48.64% |
+| google/gemini-3.8-flash      | — | 47.49% |
 | google/gemini-3.1-flash-lite | 32.41% | 45.04% |
 | anthropic/claude-fable-5.1   | — | 44.01% |
 | deepseek/deepseek-v4-pro     | 30.88% | 42.32% |
@@ -297,9 +300,11 @@ are not directly comparable.
 
 | Model | correct | intra_genus | intra_family | intra_order | hallucinated | API error | truncated |
 |-------|--------:|------------:|-------------:|------------:|-------------:|----------:|----------:|
+| openai/gpt-6-astra           | 1527 |  63 |  81 |  40 | 125 | 0 |   0 |
 | openai/gpt-5.6-sol           | 1435 |  74 | 102 |  39 | 181 | 0 |   5 |
 | openai/gpt-5.5               | 1341 |  91 | 117 |  71 | 214 | 0 |   2 |
 | anthropic/claude-opus-4.8    |  893 | 182 | 316 | 136 | 302 | 0 |   7 |
+| google/gemini-3.8-flash      |  872 | 187 | 280 | 134 | 361 | 0 |   2 |
 | google/gemini-3.1-flash-lite |  827 | 182 | 317 | 137 | 373 | 0 |   0 |
 | anthropic/claude-fable-5.1   |  808 | 147 | 290 | 187 | 374 | 0 |  30 |
 | deepseek/deepseek-v4-pro     |  777 | 115 | 289 | 211 | 365 | 7 |  72 |
@@ -312,7 +317,8 @@ are not directly comparable.
 <sub>`correct` = acceptable match. Counts are per scored species; rows sum to
 1,836 (655 for the partial qwen run). Reasoning lifts accuracy for every model
 with both conditions, but some runs frequently exhaust their token limit
-(Kimi: 588; DeepSeek: 72; Fable: 30; GPT-5.6: 5). Truncations consumed exactly
+(Kimi: 588; DeepSeek: 72; Fable: 30; GPT-5.6: 5; Gemini 3.8 Flash: 2).
+Truncations consumed exactly
 the configured output limit and remain in the denominator; they were not
 selectively rerun.</sub>
 
@@ -326,7 +332,7 @@ ruff check .
 
 ## Methodology and citation
 
-The v1.1 release and its frozen v1.0 experimental protocol, statistical
+The v1.2 release and its frozen v1.0 experimental protocol, statistical
 procedure, limitations, and reproducibility notes are documented in
 [METHODS.md](METHODS.md). Citation
 metadata is provided in [CITATION.cff](CITATION.cff).

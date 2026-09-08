@@ -101,6 +101,30 @@ def test_batch_run_dry_run_uses_fable_defaults(monkeypatch):
     assert "Max tokens:     512" in result.output
 
 
+def test_batch_run_dry_run_uses_gemini_flash_defaults(monkeypatch):
+    monkeypatch.setattr(
+        "src.batch.validate_batch_model",
+        lambda model, token=None: {
+            "canonical_slug": "google/gemini-3.8-flash-20260902"
+        },
+    )
+    result = CliRunner().invoke(
+        cli,
+        [
+            "batch-run",
+            "--model",
+            "google/gemini-3.8-flash",
+            "--benchmark-mode",
+            "reasoning",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "10 × up to 200" in result.output
+    assert "Max tokens:     2048" in result.output
+    assert "Reasoning cfg:  {'effort': 'low'}" in result.output
+
+
 def test_batch_status_accepts_batch_run_state(monkeypatch, tmp_path):
     state_path = tmp_path / "run.batch-run.json"
     state_path.write_text(

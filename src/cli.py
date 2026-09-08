@@ -1065,7 +1065,10 @@ def batch_run(
                 raise click.ClickException(
                     f"Saved batch-run setting differs for {key}; refusing mixed run."
                 )
-        for key in ("dataset_sha256", "config_sha256", "prompt_sha256"):
+        # Model-specific settings above freeze the effective protocol. The full
+        # config hash may change when an unrelated model is added, which must
+        # not prevent an otherwise identical batch run from resuming.
+        for key in ("dataset_sha256", "prompt_sha256"):
             if state.get("metadata", {}).get(key) != run_meta[key]:
                 raise click.ClickException(
                     f"Saved batch-run metadata differs for {key}."

@@ -18,12 +18,18 @@ RESULTS = ROOT / "results"
 OUTPUT = ROOT / "assets" / "charts"
 
 MODELS = [
+    ("GPT-6 Astra", None, "openai--gpt-6-astra_reasoning_batch.csv"),
     ("GPT-5.6", None, "openai--gpt-5.6-sol_reasoning_batch.csv"),
     ("GPT-5.5", "openai--gpt-5.5_no_reasoning.csv", "openai--gpt-5.5_reasoning.csv"),
     (
         "Claude Opus 4.8",
         "anthropic--claude-opus-4.8_no_reasoning.csv",
         "anthropic--claude-opus-4.8_reasoning.csv",
+    ),
+    (
+        "Gemini 3.8 Flash",
+        None,
+        "google--gemini-3.8-flash_reasoning_batch.csv",
     ),
     (
         "Gemini 3.1 Flash Lite",
@@ -94,7 +100,7 @@ def finish(fig: plt.Figure, stem: str) -> None:
 def leaderboard() -> None:
     labels = [model[0] for model in MODELS][::-1]
     values = [accuracy(model[2]) for model in MODELS][::-1]
-    colors = [GOLD if label == "GPT-5.6" else TEAL for label in labels]
+    colors = [GOLD if label == "GPT-6 Astra" else TEAL for label in labels]
 
     fig, ax = plt.subplots(figsize=(10, 7), layout="constrained")
     fig.patch.set_facecolor(BACKGROUND)
@@ -132,7 +138,7 @@ def leaderboard() -> None:
         0,
         -0.12,
         "* Qwen: rodada parcial (655 espécies). Métrica: acceptable match. "
-        "Fonte: Brazilian Birds Bench v1.1.",
+        "Fonte: Brazilian Birds Bench v1.2.",
         transform=ax.transAxes,
         color=MUTED,
         fontsize=8.5,
@@ -140,7 +146,7 @@ def leaderboard() -> None:
     ax.tick_params(colors=INK, labelsize=10, length=0)
     for spine in ax.spines.values():
         spine.set_visible(False)
-    finish(fig, "reasoning_leaderboard_v1_1")
+    finish(fig, "reasoning_leaderboard_v1_2")
 
 
 def reasoning_comparison() -> None:
@@ -210,7 +216,7 @@ def reasoning_comparison() -> None:
         0,
         -0.14,
         "* Qwen: rodada com reasoning parcial (655 espécies). "
-        "Fonte: Brazilian Birds Bench v1.1.",
+        "Fonte: Brazilian Birds Bench v1.2.",
         transform=ax.transAxes,
         color=MUTED,
         fontsize=8.5,
@@ -219,7 +225,7 @@ def reasoning_comparison() -> None:
     ax.tick_params(colors=INK, labelsize=10, length=0)
     for spine in ax.spines.values():
         spine.set_visible(False)
-    finish(fig, "reasoning_comparison_v1_1")
+    finish(fig, "reasoning_comparison_v1_2")
 
 
 if __name__ == "__main__":

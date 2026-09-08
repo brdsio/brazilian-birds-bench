@@ -1,7 +1,7 @@
 # Benchmark protocol
 
-This document describes the Brazilian Birds Bench v1.1 release. It retains the
-frozen v1.0 experimental protocol and adds two reasoning-model result sets.
+This document describes the Brazilian Birds Bench v1.2 release. It retains the
+frozen v1.0 experimental protocol and adds new reasoning-model result sets.
 It should be read with the versioned configuration, dataset, result CSVs, and
 statistical reports distributed in this repository.
 
@@ -61,7 +61,8 @@ compute intervention.
 
 The original no-reasoning runs were captured on 2026-06-24 and the original
 reasoning runs on 2026-06-29. The Fable 5.1 and GPT-5.6 reasoning runs added in
-v1.1 were captured on 2026-09-02. The Qwen reasoning run was deliberately
+v1.1 were captured on 2026-09-02. The Gemini 3.8 Flash and GPT-6 Astra runs
+added in v1.2 were completed on 2026-09-08. The Qwen reasoning run was deliberately
 stopped after 655 of 1,836
 species because of excessive latency and poor interim performance; it is
 reported as partial and is not directly comparable to complete-run percentages.
@@ -105,8 +106,9 @@ Raw model responses are retained in `results/`. The tags
 `v1.0` identifies the publication-ready protocol, corrected derived
 classifications, and original statistical reports. Tag `v1.1` adds the Fable
 5.1 and GPT-5.6 reasoning results without changing the reference dataset or
-scoring protocol. Dataset, prompt, and configuration hashes are recorded
-automatically for new runs.
+scoring protocol. Tag `v1.2` adds the Gemini 3.8 Flash and GPT-6 Astra results.
+Dataset, prompt, and configuration hashes are recorded automatically for new
+runs.
 
 ## Limitations
 
